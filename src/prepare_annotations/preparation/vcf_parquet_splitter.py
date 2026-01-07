@@ -171,7 +171,7 @@ def split_parquet_variants(
     Returns:
         SplitResult with pipeline results containing 'split_variants_dict'
     """
-    from prepare_annotations.preparation.runners import split_parquets_task
+    from prepare_annotations.preparation.pipelines import split_parquets_task
     from prepare_annotations.runtime import prefect_flow_run
     
     # Handle single path or list of paths
@@ -205,7 +205,7 @@ def download_convert_and_split_vcf(
     Returns:
         PreparationResult with pipeline results containing 'vcf_parquet_path' and 'split_variants_dict'
     """
-    from prepare_annotations.preparation.runners import prepare_vcf_source_flow
+    from prepare_annotations.preparation.pipelines import prepare_vcf_source_flow
     
     return prepare_vcf_source_flow(
         url=url,

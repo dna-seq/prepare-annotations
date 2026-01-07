@@ -43,7 +43,7 @@ if "POLARS_ENGINE_AFFINITY" not in os.environ:
 if "POLARS_LOW_MEMORY" not in os.environ:
     os.environ["POLARS_LOW_MEMORY"] = "1"
 
-from prepare_annotations.preparation.runners import (
+from prepare_annotations.preparation.pipelines import (
     PreparationPipelines,
     get_default_input_dir,
     get_default_output_dir,
@@ -214,11 +214,6 @@ def ensembl(
         "--url",
         help="Base URL for Ensembl data (default: https://ftp.ensembl.org/pub/current_variation/vcf/homo_sapiens/)"
     ),
-    compute_rsids: bool = typer.Option(
-        False,
-        "--compute-rsids/--no-compute-rsids",
-        help="Compute rsID coordinates from split variant files (requires splitting)"
-    ),
     upload: bool = typer.Option(
         False,
         "--upload/--no-upload",
@@ -304,7 +299,6 @@ def ensembl(
         species=species,
         pattern=pattern,
         url=url,
-        compute_rsids=compute_rsids,
         http_max_pool=http_max_pool,
         http_chunk_size=http_chunk_size,
         connect_timeout=connect_timeout,
@@ -456,15 +450,15 @@ def index_rsids(
 
 @app.command()
 def clinvar(
-    species: Optional[str] = typer.Option(
-        None,
-        "--species",
-        help="Species name to download (e.g., homo_sapiens). If provided, attempts to find Ensembl ClinVar in vep/ folder."
+    assembly: str = typer.Option(
+        "GRCh38_ensembl",
+        "--assembly",
+        help="Genome assembly and source: GRCh38_ensembl (default), GRCh38, or GRCh37. Ensembl suffix uses Ensembl VEP-annotated ClinVar, otherwise uses NCBI."
     ),
     url: Optional[str] = typer.Option(
         None,
         "--url",
-        help="Custom URL to download ClinVar VCF from. Overrides default NCBI and species-based Ensembl URLs."
+        help="Custom URL to download ClinVar VCF from. Overrides default NCBI and Ensembl URLs."
     ),
     pattern: Optional[str] = typer.Option(
         None,
@@ -530,8 +524,13 @@ def clinvar(
     """
     Download ClinVar VCF files and convert them to Parquet format.
     
-    This command downloads VCF files from ClinVar (NCBI by default, or Ensembl if species is provided), 
+    This command downloads VCF files from ClinVar (NCBI or Ensembl based on assembly), 
     converts them to Parquet, and optionally splits them by variant type (SNV, insertion, deletion, etc.).
+    
+    ClinVar is human-only. Use --assembly to select between:
+    - GRCh38_ensembl: Ensembl VEP-annotated ClinVar (default, includes consequence annotations)
+    - GRCh38: NCBI ClinVar for GRCh38
+    - GRCh37: NCBI ClinVar for GRCh37
     """
     run_pipeline(
         name="clinvar",
@@ -546,7 +545,7 @@ def clinvar(
         split=split,
         explode_snv_alt=explode_snv_alt,
         alts_list=alts_list,
-        species=species,
+        assembly=assembly,
         url=url,
         pattern=pattern,
         profile=profile

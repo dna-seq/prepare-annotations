@@ -48,7 +48,6 @@ class PreparationResult(BaseModel):
     vcf_local: List[Path]
     vcf_parquet_path: List[Path]
     split_variants_dict: Optional[Dict[str, List[Path]]] = None
-    rsid_coords_path: Optional[Path] = None
 
 
 class SingleUploadResult(BaseModel):

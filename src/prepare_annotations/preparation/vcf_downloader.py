@@ -675,7 +675,14 @@ def convert_to_parquet(
         
         suffixes = vcf_path.suffixes
         is_index = suffixes and suffixes[-1] in [".tbi", ".csi", ".idx"]
-        is_vcf = (".vcf" in suffixes) and not is_index
+        
+        # A file is a VCF if it has .vcf in its suffixes, 
+        # OR if it's a compressed file (.gz/.bgz) and we have reason to believe it's a VCF.
+        # For dbSNP, NCBI often uses GCF_...gz without the .vcf part.
+        is_vcf = not is_index and (
+            (".vcf" in suffixes) or 
+            (suffixes and suffixes[-1] in [".gz", ".bgz"] and (vcf_path.name.startswith("GCF_") or vcf_path.name.startswith("GCA_") or "dbsnp" in vcf_path.name.lower()))
+        )
 
         if not is_vcf:
             action.log(message_type="info", step="skip_non_vcf", path=str(vcf_path))
@@ -733,7 +740,11 @@ def validate_downloads_and_parquet(
             if not suffixes:
                 return False
             is_index = suffixes and suffixes[-1] in [".tbi", ".csi", ".idx"]
-            return (".vcf" in suffixes) and (not is_index)
+            
+            return not is_index and (
+                (".vcf" in suffixes) or 
+                (suffixes[-1] in [".gz", ".bgz"] and (p.name.startswith("GCF_") or p.name.startswith("GCA_") or "dbsnp" in p.name.lower()))
+            )
 
         vcf_files = [p for p in vcf_local_list if _is_vcf(p)]
 
@@ -874,7 +885,7 @@ def validate_downloads_and_parquet(
 
 
 if __name__ == "__main__":
-    from prepare_annotations.preparation.runners import PreparationPipelines
+    from prepare_annotations.preparation.pipelines import PreparationPipelines
     
     print("Running validation for Ensembl downloads...")
     # Note: validate_ensembl might be legacy or missing in the current Pipelines class

@@ -434,7 +434,6 @@ def prepare_vcf_source_flow(
     with_splitting: bool = False,
     explode_snv_alt: bool = False,
     alts_list: bool = True,
-    compute_rsids: bool = True,
     compression: str = "zstd",
     compression_level: Optional[int] = None,
     download_progress_interval_seconds: Optional[float] = None,
@@ -455,7 +454,6 @@ def prepare_vcf_source_flow(
     - VCF files: {vcf_dir} or {cache_dir}/{name}/
     - Parquet files: {parquet_dir} or {cache_dir}/{name}/
     - Split variants: {cache_dir}/{name}/splitted_variants/
-    - rsID coordinates: {cache_dir}/{name}/rsid_coordinates.parquet
     
     Args:
         url: Base URL to download from
@@ -466,7 +464,6 @@ def prepare_vcf_source_flow(
         parquet_dir: Specific directory for Parquet files
         with_splitting: Whether to split by variant type
         explode_snv_alt: Whether to explode SNV ALT column
-        compute_rsids: Whether to compute rsID coordinates
         compression: Compression algorithm for Parquet
         compression_level: Compression level
         download_progress_interval_seconds: Interval for progress logging
@@ -564,7 +561,6 @@ def prepare_vcf_source_flow(
         validate_task(urls=urls, vcf_local=vcf_locals, vcf_parquet_path=vcf_parquet_paths)
         
         split_dict = None
-        rsid_coords_path = None
         
         # Keep only real parquet conversions (e.g. skip .tbi/.csi index files).
         parquet_only_paths = [p for p in vcf_parquet_paths if is_parquet(p)]
@@ -594,35 +590,6 @@ def prepare_vcf_source_flow(
                     write_to=split_dir
                 )
                 split_dict = split_result.split_variants_dict
-                
-                # 7. Optional rsID coordinate computation (requires split data)
-                if compute_rsids:
-                    rsid_coords_path = cache_path / "rsid_coordinates.parquet"
-                    compute_rsid_coordinates_task(
-                        input_dir=cache_path / "splitted_variants",
-                        output_path=rsid_coords_path
-                    )
-        elif compute_rsids:
-            if not parquet_only_paths:
-                logger.warning(
-                    "rsID computation requested, but no .parquet VCF conversions were produced "
-                    "(likely downloaded only an index file). Skipping rsID computation."
-                )
-            else:
-                # If user wants rsIDs but no splitting, we need to split first
-                logger.warning("rsID computation requires split data. Enabling splitting...")
-                split_result = split_parquets_task(
-                    parquet_paths=parquet_only_paths,
-                    explode_snv_alt=explode_snv_alt,
-                    write_to=cache_path / "splitted_variants"
-                )
-                split_dict = split_result.split_variants_dict
-                
-                rsid_coords_path = cache_path / "rsid_coordinates.parquet"
-                compute_rsid_coordinates_task(
-                    input_dir=cache_path / "splitted_variants",
-                    output_path=rsid_coords_path
-                )
             
         # Final cleanup: Remove .fsspec_cache if it exists and is empty
         fsspec_cache = cache_path / ".fsspec_cache"
@@ -642,8 +609,7 @@ def prepare_vcf_source_flow(
             urls=urls,
             vcf_local=vcf_locals,
             vcf_parquet_path=vcf_parquet_paths,
-            split_variants_dict=split_dict,
-            rsid_coords_path=rsid_coords_path
+            split_variants_dict=split_dict
         )
 
 
@@ -705,7 +671,6 @@ def prepare_dbsnp_t2t_flow(
         with_splitting=with_splitting,
         explode_snv_alt=explode_snv_alt,
         alts_list=alts_list,
-        compute_rsids=False,  # Not needed for T2T unless requested
         compression=compression,
         compression_level=compression_level,
         download_progress_interval_seconds=progress_interval_seconds,
@@ -747,7 +712,6 @@ def prepare_gnomad_flow(
 
 @flow(name="Prepare ClinVar")
 def prepare_clinvar_flow(
-    species: Optional[str] = None,
     url: Optional[str] = None,
     pattern: Optional[str] = None,
     dest_dir: Optional[str | Path] = None,
@@ -757,15 +721,22 @@ def prepare_clinvar_flow(
     explode_snv_alt: bool = False,
     alts_list: bool = True,
     profile: bool = True,
+    assembly: str = "GRCh38_ensembl",
 ) -> PreparationResult:
-    """Prefect flow for ClinVar preparation."""
+    """Prefect flow for ClinVar preparation.
+    
+    ClinVar is human-only. Use assembly parameter to select source:
+    - GRCh38_ensembl: Ensembl VEP-annotated ClinVar (includes consequence annotations)
+    - GRCh38: NCBI ClinVar for GRCh38
+    - GRCh37: NCBI ClinVar for GRCh37
+    """
     effective_url = url
     effective_pattern = pattern
     effective_dest = dest_dir
     
-    if species and not effective_url:
-        # If species provided, try to find Ensembl ClinVar in vep/ folder
-        ensembl_species_url = f"https://ftp.ensembl.org/pub/current_variation/vcf/{species}/"
+    if "ensembl" in assembly.lower() and not effective_url:
+        # Use Ensembl VEP-annotated ClinVar from vep/ folder
+        ensembl_species_url = f"https://ftp.ensembl.org/pub/current_variation/vcf/homo_sapiens/"
         try:
             # Check for vep directory
             vep_url = f"{ensembl_species_url}vep/"
@@ -781,17 +752,17 @@ def prepare_clinvar_flow(
                 effective_url = latest_folder
                 effective_pattern = r"clinvar.*\.vcf\.gz$"
                 
-                # For Ensembl ClinVar, we use a species-specific subfolder in the cache
+                # Use clinvar cache directory
                 if not effective_dest:
-                    effective_dest = get_default_cache_dir("clinvar") / species
+                    effective_dest = get_default_cache_dir("clinvar")
                 
                 get_run_logger().info(f"Detected Ensembl ClinVar in {effective_url}")
         except Exception as e:
-            get_run_logger().warning(f"Could not detect Ensembl ClinVar for species {species}: {e}")
+            get_run_logger().warning(f"Could not detect Ensembl ClinVar {e}")
 
     if not effective_url:
         # Default to NCBI ClinVar if no URL provided/detected
-        effective_url = "https://ftp.ncbi.nlm.nih.gov/pub/clinvar/vcf_GRCh38/"
+        effective_url = f"https://ftp.ncbi.nlm.nih.gov/pub/clinvar/vcf_{assembly}/"
         effective_pattern = effective_pattern or r"clinvar\.vcf\.gz$"
 
     return prepare_vcf_source_flow(
@@ -816,7 +787,6 @@ def prepare_ensembl_flow(
     with_splitting: bool = False,
     explode_snv_alt: bool = False,
     alts_list: bool = True,
-    compute_rsids: bool = False,
     pattern: Optional[str] = None,
     http_max_pool: Optional[int] = None,
     http_chunk_size: Optional[int] = None,
@@ -836,7 +806,6 @@ def prepare_ensembl_flow(
         with_splitting: Whether to split by variant type
         explode_snv_alt: Whether to explode SNV ALT column
         alts_list: Whether to add a list of alternative alleles as 'alts' column
-        compute_rsids: Whether to compute rsID coordinates
         pattern: Regex pattern to filter files
         http_max_pool: HTTP connection pool size (default: 20)
         http_chunk_size: HTTP chunk size for reads
@@ -868,7 +837,6 @@ def prepare_ensembl_flow(
         with_splitting=with_splitting,
         explode_snv_alt=explode_snv_alt,
         alts_list=alts_list,
-        compute_rsids=compute_rsids,
         http_max_pool=http_max_pool,
         http_chunk_size=http_chunk_size,
         connect_timeout=connect_timeout,
@@ -898,7 +866,7 @@ class PreparationPipelines:
 
     @staticmethod
     def download_clinvar(
-        species: Optional[str] = None,
+        assembly: str = "GRCh38_ensembl",
         url: Optional[str] = None,
         pattern: Optional[str] = None,
         dest_dir: Optional[Path] = None,
@@ -910,10 +878,26 @@ class PreparationPipelines:
         log: bool = True,
         profile: bool = True,
     ) -> PreparationResult:
-        """Download ClinVar VCF files and convert to parquet using Prefect."""
+        """Download ClinVar VCF files and convert to parquet using Prefect.
+        
+        Args:
+            assembly: Genome assembly and source. Options:
+                - GRCh38_ensembl: Ensembl VEP-annotated ClinVar for GRCh38 (default)
+                - GRCh38: NCBI ClinVar for GRCh38
+                - GRCh37: NCBI ClinVar for GRCh37
+            url: Custom URL (overrides assembly-based URL)
+            pattern: Regex pattern to filter files
+            dest_dir: Base destination directory
+            vcf_dir: Specific directory for VCF files
+            parquet_dir: Specific directory for Parquet files
+            with_splitting: Whether to split by variant type
+            explode_snv_alt: Whether to explode SNV ALT column
+            alts_list: Whether to add a list of alternative alleles as 'alts' column
+            log: Whether to enable logging
+            profile: Whether to track resource usage
+        """
         PreparationPipelines._setup_logging("download_clinvar", log)
         return prepare_clinvar_flow(
-            species=species,
             url=url,
             pattern=pattern,
             dest_dir=dest_dir,
@@ -922,6 +906,7 @@ class PreparationPipelines:
             with_splitting=with_splitting,
             explode_snv_alt=explode_snv_alt,
             alts_list=alts_list,
+            assembly=assembly,
             profile=profile
         )
 
@@ -934,7 +919,6 @@ class PreparationPipelines:
         with_splitting: bool = False,
         explode_snv_alt: bool = False,
         alts_list: bool = True,
-        compute_rsids: bool = False,
         log: bool = True,
         pattern: Optional[str] = None,
         url: Optional[str] = None,
@@ -956,7 +940,6 @@ class PreparationPipelines:
             with_splitting: Whether to split by variant type
             explode_snv_alt: Whether to explode SNV ALT column
             alts_list: Whether to add a list of alternative alleles as 'alts' column
-            compute_rsids: Whether to compute rsID coordinates
             log: Whether to enable logging
             pattern: Regex pattern to filter files
             url: Custom base URL (overrides default Ensembl URL)
@@ -986,7 +969,6 @@ class PreparationPipelines:
                 with_splitting=with_splitting,
                 explode_snv_alt=explode_snv_alt,
                 alts_list=alts_list,
-                compute_rsids=compute_rsids,
                 http_max_pool=http_max_pool,
                 http_chunk_size=http_chunk_size,
                 connect_timeout=connect_timeout,
@@ -1004,7 +986,6 @@ class PreparationPipelines:
             with_splitting=with_splitting,
             explode_snv_alt=explode_snv_alt,
             alts_list=alts_list,
-            compute_rsids=compute_rsids,
             pattern=pattern,
             http_max_pool=http_max_pool,
             http_chunk_size=http_chunk_size,

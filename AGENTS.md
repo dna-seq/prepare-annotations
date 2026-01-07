@@ -6,6 +6,7 @@ This repository is dedicated to the preparation of genomic annotation data (Ense
 
 - `src/prepare_annotations/`: Core logic and CLI.
   - `preparation/`: Source-specific preparation pipelines (Prefect-based).
+    - `pipelines.py`: Main flow and pipeline definitions.
   - `vortex/`: Vortex data conversion utilities.
   - `cli.py`: Main Typer CLI entrypoint.
   - `io.py`: VCF/Parquet I/O utilities.
