@@ -202,8 +202,11 @@ def collect_parquet_files(
         else:
             files = list(source_dir.glob(pattern.replace("**/", "")))
         
-        # SAFETY: Filter to ONLY parquet files, explicitly excluding VCF and other formats
-        parquet_files = [f for f in files if f.suffix == ".parquet" and f.is_file()]
+        # SAFETY: Filter to ONLY parquet files, explicitly excluding temporary files and other formats
+        parquet_files = [
+            f for f in files 
+            if f.suffix == ".parquet" and not f.name.endswith(".tmp.parquet") and f.is_file()
+        ]
         
         action.log(
             message_type="info",

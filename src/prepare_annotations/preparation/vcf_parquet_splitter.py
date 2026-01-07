@@ -8,7 +8,7 @@ from prepare_annotations.models import SplitResult, PreparationResult
 
 def split_variants_by_tsa(
     parquet_path: Path, 
-    explode_snv_alt: bool = True,
+    explode_snv_alt: bool = False,
     write_to: Optional[Path] = None
 ) -> Dict[str, Path]:
     """
@@ -22,8 +22,8 @@ def split_variants_by_tsa(
     Returns:
         Dictionary mapping TSA (variant type) to written parquet file paths
     """
-    # Skip non-parquet files
-    if not parquet_path.suffix == '.parquet':
+    # Skip non-parquet or temporary files
+    if not parquet_path.suffix == '.parquet' or parquet_path.name.endswith(".tmp.parquet"):
         return {}
         
     # Default output directory next to the input parquet if not provided
@@ -33,8 +33,16 @@ def split_variants_by_tsa(
     
     with start_action(action_type="split_variants_by_tsa", parquet_path=str(parquet_path), explode_snv_alt=explode_snv_alt, write_to=str(write_to)) as action:
         df = pl.scan_parquet(parquet_path)
-        stem = parquet_path.stem
         
+        # Normalize TSA column name to lowercase 'tsa' (some VCFs use TSA instead of tsa)
+        if "TSA" in df.columns and "tsa" not in df.columns:
+            df = df.rename({"TSA": "tsa"})
+            
+        # Get cleaner stem (remove .vcf if present)
+        stem = parquet_path.stem
+        if stem.endswith(".vcf"):
+            stem = stem[:-4]
+            
         # Get unique TSAs (variant types)
         tsas = df.select("tsa").unique().collect(streaming=True).to_series().to_list()
         action.log(message_type="info", tsas=tsas, explode_snv_alt=explode_snv_alt)
@@ -67,7 +75,12 @@ def split_variants_by_tsa(
         result = {}
         start_time = time.time()
         
+        # Optimization: for large files, using multiple sink_parquet calls is slow as it scans the file multiple times.
+        # However, for now we keep the Polars logic but ensure it's as efficient as possible.
+        # In the future, we could use DuckDB's PARTITION_BY for a single-pass split.
+        
         for tsa in tsas:
+            # We filter for each TSA. Polars will try to optimize this.
             df_tsa = df.filter(pl.col("tsa") == tsa)
             
             # Explode ALT column for SNV variants if requested
@@ -78,10 +91,14 @@ def split_variants_by_tsa(
             tsa_folder = write_to / tsa
             tsa_folder.mkdir(parents=True, exist_ok=True)
             
-            # Write to parquet file
+            # Write to parquet file using a temporary file for atomicity
             where = tsa_folder / f"{stem}.parquet"
+            temp_where = where.with_suffix(".tmp.parquet")
+            
             action.log(message_type="info", tsa=tsa, where=str(where))
-            df_tsa.sink_parquet(where)
+            # Use compression level 14 for splits to get closer to level 19 size while remaining fast
+            df_tsa.sink_parquet(temp_where, compression="zstd", compression_level=14)
+            temp_where.replace(where)
             result[tsa] = where
         
         # Calculate execution time
@@ -139,11 +156,8 @@ def validate_split_outputs(
 
 def split_parquet_variants(
     vcf_parquet_path: Path | list[Path],
-    explode_snv_alt: bool = True,
+    explode_snv_alt: bool = False,
     write_to: Optional[Path] = None,
-    parallel: bool = True,
-    workers: Optional[int] = None,
-    return_results: bool = True,
     **kwargs
 ) -> SplitResult:
     """Split variants in parquet files by TSA using Prefect.
@@ -152,8 +166,6 @@ def split_parquet_variants(
         vcf_parquet_path: Path or list of paths to parquet files containing VCF data
         explode_snv_alt: Whether to explode ALT column on "|" separator for SNV variants
         write_to: Optional directory to write split parquet files to
-        parallel: Handled by Prefect
-        return_results: Return results dict (default True)
         **kwargs: Additional parameters
     
     Returns:
@@ -178,10 +190,7 @@ def download_convert_and_split_vcf(
     url: str,
     pattern: str | None = None,
     name: str | Path = "downloads",
-    output_names: set[str] | None = None,
-    parallel: bool = True,
-    return_results: bool = True,
-    explode_snv_alt: bool = True,
+    explode_snv_alt: bool = False,
     **kwargs
 ) -> PreparationResult:
     """Download, convert VCF files to parquet, and split variants by TSA using Prefect.
@@ -190,9 +199,6 @@ def download_convert_and_split_vcf(
         url: Base URL to search for VCF files
         pattern: Regex pattern to filter files (optional)
         name: Directory name or Path for downloads
-        output_names: Handled by return results
-        parallel: Handled by Prefect
-        return_results: Return results dict (default True)
         explode_snv_alt: Whether to explode ALT column on "|" separator for SNV variants
         **kwargs: Additional parameters
     

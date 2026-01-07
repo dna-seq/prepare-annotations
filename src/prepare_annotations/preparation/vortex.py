@@ -6,6 +6,7 @@ import pyarrow.parquet as pq
 import vortex as vx  # pip install vortex-data
 import typer
 from eliot import start_action, to_file
+from prepare_annotations.io import is_parquet
 
 
 def parquet_to_vortex(
@@ -122,9 +123,9 @@ def convert_folder_to_vortex(
         
         # Find all parquet files in the folder
         if recursive:
-            parquet_files = list(input_folder.glob("**/*.parquet"))
+            parquet_files = [p for p in input_folder.glob("**/*.parquet") if is_parquet(p)]
         else:
-            parquet_files = list(input_folder.glob("*.parquet"))
+            parquet_files = [p for p in input_folder.glob("*.parquet") if is_parquet(p)]
         
         action.log(
             message_type="info",

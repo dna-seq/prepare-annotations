@@ -143,12 +143,22 @@ def get_info_fields(vcf_path: str) -> list[str]:
             return []
 
 
+def is_parquet(path: Union[str, Path]) -> bool:
+    """Check if a path is a parquet file, excluding temporary files."""
+    p = Path(path)
+    return p.suffix == ".parquet" and not p.name.endswith(".tmp.parquet")
+
+
 def read_vcf_file(
     file_path: Union[str, Path],
     info_fields: Union[list[str], None] = None,
+    thread_num: Optional[int] = None,
     save_parquet: SaveParquet = "auto",
     save_vortex: SaveVortex = None,
-    engine: str = "auto"
+    engine: str = "auto",
+    compression: str = "zstd",
+    compression_level: Optional[int] = 14,
+    alts_list: bool = True
 ) -> pl.LazyFrame:
     """
     Read a VCF file using polars-bio, automatically handling gzipped files.
@@ -166,8 +176,9 @@ def read_vcf_file(
             - "auto": if parquet saving is enabled, saves next to the parquet with .vortex extension;
               otherwise saves next to the input, replacing .vcf/.vcf.gz with .vortex
             - Path: save to the provided location
-
-    Returns:
+        engine: Parquet engine to use for sinking ("auto" or "arrow")
+        compression: Compression type for parquet (e.g., "zstd", "snappy")
+        compression_level: Compression level for parquet (e.g., 14 for zstd)
         Polars LazyFrame or DataFrame containing the VCF data.
         When saving to parquet, returns a LazyFrame that reads from the parquet file
         (preserving lazy evaluation while ensuring temp files are cleaned up).
@@ -186,7 +197,7 @@ def read_vcf_file(
         file_path = Path(file_path)
 
         # If it's already a parquet file, just scan it
-        if file_path.suffix == ".parquet":
+        if is_parquet(file_path):
             action.log(message_type="info", step="detected_parquet", path=str(file_path))
             return pl.scan_parquet(str(file_path))
 
@@ -194,7 +205,7 @@ def read_vcf_file(
         vcf_kwargs = {
             k: v
             for k, v in locals().items()
-            if k not in ("file_path", "save_parquet", "save_vortex", "action", "engine")
+            if k not in ("file_path", "save_parquet", "save_vortex", "action", "engine", "compression", "compression_level", "alts_list")
         }
 
         # Resolve parquet path decision early
@@ -224,6 +235,19 @@ def read_vcf_file(
         vcf_kwargs["info_fields"] = get_info_fields(str(file_path)) if info_fields is None else info_fields
 
         result = pb.scan_vcf(str(file_path), **vcf_kwargs)
+        if alts_list:
+            # 1. Define the transformation
+            result = result.with_columns(alts=pl.col("alt").str.split("|"))
+            
+            # 2. Reorder: Find where 'alt' is and slice the column names
+            cols = result.collect_schema().names()
+            if "alt" in cols:
+                idx = cols.index("alt") + 1
+                # Move the last column ("alts") to the position right after "alt"
+                new_order = cols[:idx] + ["alts"] + [c for c in cols[idx:] if c != "alts"]
+                result = result.select(new_order)
+
+        
 
         action.log(
             message_type="info",
@@ -251,13 +275,31 @@ def read_vcf_file(
                 action_type="save_parquet",
                 parquet_path=str(effective_parquet_path),
                 is_temporary=temp_parquet_path is not None,
+                compression=compression,
+                compression_level=compression_level,
             ) as save_action:
+                # Use a temporary file for atomic write to avoid corrupted files if interrupted
+                actual_path = Path(effective_parquet_path)
+                tmp_path = actual_path.with_suffix(".tmp.parquet")
+                
                 if isinstance(result, pl.LazyFrame):
                     # Stream directly to parquet without collecting into memory
-                    result.sink_parquet(str(effective_parquet_path), engine=engine)
+                    result.sink_parquet(
+                        str(tmp_path), 
+                        engine=engine,
+                        compression=compression,
+                        compression_level=compression_level,
+                    )
                 else:
                     # DataFrame path (rare here) – write directly
-                    result.write_parquet(str(effective_parquet_path))
+                    result.write_parquet(
+                        str(tmp_path),
+                        compression=compression,
+                        compression_level=compression_level,
+                    )
+                
+                # Atomic replace
+                tmp_path.replace(actual_path)
 
                 save_action.log(
                     message_type="info",
@@ -296,11 +338,72 @@ def read_vcf_file(
         return result
 
 
+def merge_parquet_files(
+    input_files: list[Path],
+    output_path: Path,
+    compression: str = "zstd",
+    compression_level: int = 14
+) -> Path:
+    """
+    Merge multiple parquet files into one using pyarrow.
+    This is memory-efficient as it processes files one by one and 
+    streams row groups.
+    
+    Args:
+        input_files: List of paths to parquet files to merge
+        output_path: Path to the final merged parquet file
+        compression: Compression codec to use
+        compression_level: Compression level
+        row_group_size: Target number of rows per row group in the output
+        
+    Returns:
+        Path to the merged file
+    """
+    import pyarrow.parquet as pq
+    from eliot import start_action
+    
+    with start_action(action_type="merge_parquet_files", count=len(input_files), output=str(output_path)) as action:
+        if not input_files:
+            raise ValueError("No input files provided for merging")
+            
+        # Read schema from the first file
+        schema = pq.read_schema(input_files[0])
+        
+        # Use a temporary file for atomic write
+        tmp_output = output_path.with_suffix(".merge_tmp.parquet")
+        
+        try:
+            with pq.ParquetWriter(
+                str(tmp_output), 
+                schema=schema, 
+                compression=compression, 
+                compression_level=compression_level,
+                # We let the writer handle row group sizes based on data
+            ) as writer:
+                for f in input_files:
+                    action.log(message_type="info", step="merging_file", file=str(f))
+                    pf = pq.ParquetFile(f)
+                    # Stream row groups to keep memory usage low
+                    for i in range(pf.num_row_groups):
+                        writer.write_table(pf.read_row_group(i))
+            
+            # Atomic swap
+            tmp_output.replace(output_path)
+            return output_path
+            
+        finally:
+            if tmp_output.exists():
+                tmp_output.unlink()
+
+
 def vcf_to_parquet(
     vcf_path: Union[str, Path],
     parquet_path: Optional[Union[str, Path]] = None,
     info_fields: Union[list[str], None] = None,
-    overwrite: bool = False
+    overwrite: bool = False,
+    compression: str = "zstd",
+    compression_level: Optional[int] = 14,
+    alts_list: bool = True
 ) -> AnnotatedLazyFrame:
     """
     Read a VCF file and save it to Parquet format, returning both the path and LazyFrame.
@@ -313,15 +416,10 @@ def vcf_to_parquet(
         vcf_path: Path to the input VCF file (can be .vcf or .vcf.gz)
         parquet_path: Path where to save the Parquet file. If None, saves next to VCF with .parquet extension
         info_fields: The fields to read from the INFO column. If None, reads all available fields
-        thread_num: Number of threads for parallel decompression (local files only)
-        chunk_size: Chunk size in MB for object store reading (default 8MB)
-        concurrent_fetches: Number of concurrent fetches for object store (default 1)
-        allow_anonymous: Whether to allow anonymous access to object storage
-        enable_request_payer: Whether to enable request payer for AWS S3
-        max_retries: Maximum retries for object storage operations
-        timeout: Timeout in seconds for object storage operations
-        compression_type: Compression type detection ("auto", "bgz", etc.)
         overwrite: Whether to overwrite existing Parquet file (default False)
+        compression: Compression type for parquet (e.g., "zstd", "snappy")
+        compression_level: Compression level for parquet (e.g., 14 for zstd)
+        alts_list: Whether to add a list of alternative alleles as 'alts' column
         
     Returns:
         AnnotatedLazyFrame: A tuple containing:
@@ -363,19 +461,38 @@ def vcf_to_parquet(
         )
         
         # If parquet already exists and overwrite is False, reuse it
+        # UNLESS the VCF is newer than the parquet (which suggests we should re-convert)
         if output_path.exists() and not overwrite:
-            action.log(
-                message_type="info",
-                step="reusing_existing_parquet",
-                path=str(output_path)
-            )
-            return pl.scan_parquet(str(output_path)), output_path
+            vcf_mtime = vcf_path.stat().st_mtime
+            pq_mtime = output_path.stat().st_mtime
+            
+            if pq_mtime >= vcf_mtime:
+                action.log(
+                    message_type="info",
+                    step="reusing_existing_parquet",
+                    path=str(output_path),
+                    vcf_mtime=vcf_mtime,
+                    pq_mtime=pq_mtime
+                )
+                return pl.scan_parquet(str(output_path)), output_path
+            else:
+                action.log(
+                    message_type="info",
+                    step="parquet_outdated",
+                    path=str(output_path),
+                    vcf_mtime=vcf_mtime,
+                    pq_mtime=pq_mtime,
+                    reason="VCF is newer than existing parquet"
+                )
         
         # Use read_vcf_file with forced parquet saving
         lazy_frame = read_vcf_file(
             file_path=vcf_path,
             info_fields=info_fields,
-            save_parquet=output_path
+            save_parquet=output_path,
+            compression=compression,
+            compression_level=compression_level,
+            alts_list=alts_list
         )
         
         action.log(

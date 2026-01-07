@@ -5,6 +5,7 @@ from typing import Optional, Union
 import polars as pl
 import vortex as vx
 from eliot import start_action
+from prepare_annotations.io import is_parquet
 
 
 def parquet_to_vortex(
@@ -163,7 +164,7 @@ def convert_ensembl_directory_to_vortex(
         Path to the directory containing converted Vortex files
         
     Example:
-        >>> cache_path = Path("~/.cache/prepare_annotations/ensembl_variations/splitted_variants")
+        >>> cache_path = Path("~/.cache/prepare_annotations/ensembl/splitted_variants")
         >>> vortex_dir = convert_ensembl_directory_to_vortex(cache_path, "SNV", batch_size=50000)
         >>> print(f"Converted files in: {vortex_dir}")
     """
@@ -189,7 +190,7 @@ def convert_ensembl_directory_to_vortex(
             raise FileNotFoundError(f"Variant directory not found: {variant_dir}")
         
         # Find all parquet files in the variant directory
-        parquet_files = list(variant_dir.glob("*.parquet"))
+        parquet_files = [p for p in variant_dir.glob("*.parquet") if is_parquet(p)]
         
         if not parquet_files:
             action.log(

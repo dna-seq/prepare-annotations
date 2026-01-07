@@ -23,14 +23,13 @@ app = typer.Typer(
 console = Console()
 
 
-def _get_default_ensembl_cache_path() -> Path:
+def _get_default_ensembl_cache_path(split_variants: bool = False) -> Path:
     """Get the default Ensembl cache path."""
     env_cache = os.getenv("PREPARE_ANNOTATIONS_CACHE_DIR")
     if env_cache:
-        return Path(env_cache) / "ensembl_variations" / "splitted_variants"
+        return Path(env_cache) / "ensembl" / "splitted_variants" if split_variants else  Path(env_cache) / "ensembl" 
     else:
-        user_cache_path = Path(user_cache_dir(appname="prepare-annotations"))
-        return user_cache_path / "ensembl_variations" / "splitted_variants"
+        return Path(user_cache_dir(appname="just-dna-pipelines")) / "ensembl" / "splitted_variants" if split_variants else Path(user_cache_dir(appname="just-dna-pipelines")) / "ensembl"
 
 
 @app.command()
@@ -177,15 +176,15 @@ def ensembl(
     Uses streaming to handle large multi-gigabyte files efficiently.
     
     If no cache path is provided, uses the default cache location:
-    - Linux: ~/.cache/prepare_annotations/ensembl_variations/splitted_variants
-    - macOS: ~/Library/Caches/prepare_annotations/ensembl_variations/splitted_variants
-    - Windows: %LOCALAPPDATA%\\prepare_annotations\\Cache\\ensembl_variations\\splitted_variants
+    - Linux: ~/.cache/prepare_annotations/ensembl/splitted_variants
+    - macOS: ~/Library/Caches/prepare_annotations/ensembl/splitted_variants
+    - Windows: %LOCALAPPDATA%\\prepare_annotations\\Cache\\ensembl\\splitted_variants
     
     Can be overridden with PREPARE_ANNOTATIONS_CACHE_DIR environment variable.
     
     Example:
         convert-vortex ensembl
-        convert-vortex ensembl ~/.cache/prepare_annotations/ensembl_variations/splitted_variants
+        convert-vortex ensembl ~/.cache/prepare_annotations/ensembl/splitted_variants
         convert-vortex ensembl --variant-type SNV --batch-size 50000
         convert-vortex ensembl --output-dir ./data/vortex
         convert-vortex ensembl --overwrite

@@ -20,6 +20,23 @@ class ResourceReport(BaseModel):
     memory_delta: int
 
 
+class ModuleDependency(BaseModel):
+    """A dependency on another Just DNA Pipelines module."""
+    name: str
+    url: str
+    version: Optional[str] = None
+
+
+class ModuleManifest(BaseModel):
+    """Manifest for a Just DNA Pipelines module (app)."""
+    name: str
+    version: str
+    description: str = ""
+    author: str = ""
+    dependencies: List[ModuleDependency] = []
+    entrypoint: str = "definitions.py"
+
+
 class SplitResult(BaseModel):
     """Result of splitting parquet files by variant type."""
     split_variants_dict: Dict[str, List[Path]]
@@ -31,6 +48,7 @@ class PreparationResult(BaseModel):
     vcf_local: List[Path]
     vcf_parquet_path: List[Path]
     split_variants_dict: Optional[Dict[str, List[Path]]] = None
+    rsid_coords_path: Optional[Path] = None
 
 
 class SingleUploadResult(BaseModel):
@@ -48,4 +66,10 @@ class BatchUploadResult(BaseModel):
     uploaded_files: List[SingleUploadResult]
     num_uploaded: int
     num_skipped: int
+
+
+class RSIDCoordinateResult(BaseModel):
+    """Result of computing rsID coordinates."""
+    output_path: Path
+    count: int
 

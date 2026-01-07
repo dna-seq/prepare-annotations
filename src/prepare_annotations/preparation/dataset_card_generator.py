@@ -106,20 +106,23 @@ Each directory contains parquet files split by chromosome.
     version_info = f"Version: {version}" if version else f"Updated: {date_str}"
     
     card = f"""---
+language:
+  - en
 license: apache-2.0
 task_categories:
-- genomics
-- variant-annotation
+  - tabular-classification
 tags:
-- genomics
-- ensembl
-- vcf
-- variants
-- parquet
-- bioinformatics
+  - biology
+  - genomics
+  - variant-annotation
+  - ensembl
+  - vcf
+  - variants
+  - parquet
+  - bioinformatics
 pretty_name: Ensembl Variations (Parquet)
 size_categories:
-- 10G<n<100G
+  - 10G<n<100G
 ---
 
 # Ensembl Variations (Parquet Format)
@@ -210,7 +213,7 @@ Typical columns in the parquet files:
 If you use this dataset, please cite:
 
 ```bibtex
-@misc{{ensembl_variations_parquet,
+@misc{{ensembl_variations,
   title = {{Ensembl Variations (Parquet Format)}},
   author = {{GenoBear Team}},
   year = {{{datetime.now().year}}},
@@ -302,22 +305,25 @@ Each directory contains parquet files with clinical variant data.
     version_info = f"Version: {version}" if version else f"Updated: {date_str}"
     
     card = f"""---
+language:
+  - en
 license: other
 task_categories:
-- genomics
-- variant-annotation
-- clinical-genomics
+  - tabular-classification
 tags:
-- genomics
-- clinvar
-- clinical-variants
-- vcf
-- parquet
-- bioinformatics
-- pathogenicity
+  - biology
+  - genomics
+  - variant-annotation
+  - clinical-genomics
+  - clinvar
+  - clinical-variants
+  - vcf
+  - parquet
+  - bioinformatics
+  - pathogenicity
 pretty_name: ClinVar (Parquet Format)
 size_categories:
-- 1G<n<10G
+  - 1G<n<10G
 ---
 
 # ClinVar (Parquet Format)
@@ -487,20 +493,23 @@ Each directory contains parquet files split by chromosome.
     version_info = f"Version: {version}" if version else f"Updated: {date_str}"
     
     card = f"""---
+language:
+  - en
 license: other
 task_categories:
-- genomics
-- variant-annotation
+  - tabular-classification
 tags:
-- genomics
-- dbsnp
-- rsid
-- vcf
-- parquet
-- bioinformatics
+  - biology
+  - genomics
+  - variant-annotation
+  - dbsnp
+  - rsid
+  - vcf
+  - parquet
+  - bioinformatics
 pretty_name: dbSNP (Parquet Format)
 size_categories:
-- 100G<n<1T
+  - 100G<n<1T
 ---
 
 # dbSNP (Parquet Format)
@@ -526,6 +535,80 @@ import polars as pl
 
 # Load dbSNP data for chr21
 df = pl.scan_parquet("hf://datasets/just-dna-seq/dbsnp/data/SNV/GCF_000001405.40.parquet")
+```
+
+## Maintenance
+
+This dataset is maintained by the GenoBear project.
+- GitHub: [https://github.com/dna-seq/prepare-annotations](https://github.com/dna-seq/prepare-annotations)
+"""
+    return card
+
+
+def generate_dbsnp_t2t_card(
+    num_files: int,
+    total_size_gb: float,
+    variant_types: Optional[List[str]] = None,
+    version: Optional[str] = None,
+    use_template: bool = True,
+) -> str:
+    """
+    Generate a dataset card for dbSNP T2T (CHM13) dataset.
+    """
+    date_str = datetime.now().strftime("%Y-%m-%d")
+    
+    card = f"""---
+language:
+  - en
+license: other
+task_categories:
+  - tabular-classification
+tags:
+  - biology
+  - genomics
+  - variant-annotation
+  - dbsnp
+  - t2t
+  - chm13
+  - rsid
+  - vcf
+  - parquet
+  - bioinformatics
+pretty_name: dbSNP T2T CHM13 (Parquet Format)
+size_categories:
+  - 10G<n<100G
+---
+
+# dbSNP T2T CHM13 (Parquet Format)
+
+This dataset contains dbSNP variant data lifted over to the T2T-CHM13 v2.0 assembly, converted to Parquet format for fast and efficient VCF annotation and rsID lookup.
+
+## Dataset Description
+
+- **Purpose**: Fast rsID lookup and variant annotation for T2T-CHM13 assembly
+- **Format**: Apache Parquet (columnar storage)
+- **Source**: [T2T-CHM13 Assemblies](https://github.com/marbl/CHM13) / [dbSNP](https://www.ncbi.nlm.nih.gov/snp/)
+- **Updated**: {date_str}
+- **Total Files**: {num_files}
+- **Total Size**: ~{total_size_gb:.1f} GB
+
+## Why T2T-CHM13?
+
+The Telomere-to-Telomere (T2T) CHM13 assembly provides the first complete, gapless sequence of a human genome, including centromeric regions and segmental duplications. This dataset allows for accurate variant annotation on this high-quality assembly.
+
+## Usage
+
+### With Polars
+
+```python
+import polars as pl
+
+# Load T2T dbSNP data
+df = pl.scan_parquet("hf://datasets/just-dna-seq/dbsnp_t2t/data/chm13v2.0_dbSNPv155.parquet")
+
+# Filter variants
+variants = df.filter(pl.col("CHROM") == "chr1").limit(10).collect()
+print(variants)
 ```
 
 ## Maintenance
@@ -562,20 +645,23 @@ The dataset is organized by variant type:
     version_info = f"Version: {version}" if version else f"Updated: {date_str}"
     
     card = f"""---
+language:
+  - en
 license: odc-by
 task_categories:
-- genomics
-- variant-annotation
+  - tabular-classification
 tags:
-- genomics
-- gnomad
-- allele-frequency
-- vcf
-- parquet
-- bioinformatics
+  - biology
+  - genomics
+  - variant-annotation
+  - gnomad
+  - allele-frequency
+  - vcf
+  - parquet
+  - bioinformatics
 pretty_name: gnomAD (Parquet Format)
 size_categories:
-- 1T<n<10T
+  - 1T<n<10T
 ---
 
 # gnomAD (Parquet Format)
