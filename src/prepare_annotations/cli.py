@@ -972,6 +972,135 @@ def update_card(
 
 
 @app.command()
+def longevitymap(
+    db_path: Optional[str] = typer.Option(
+        None,
+        "--db-path",
+        help="Path to longevitymap SQLite database. Defaults to data/modules/just_longevitymap/longevitymap.sqlite"
+    ),
+    output_path: Optional[str] = typer.Option(
+        None,
+        "--output-path",
+        help="Output path for the parquet file. Defaults to data/output/modules/longevitymap_annotations.parquet"
+    ),
+    ensembl_cache: Optional[str] = typer.Option(
+        None,
+        "--ensembl-cache",
+        help="Path to Ensembl cache directory. If not provided, will try standard cache location."
+    ),
+    use_cache: bool = typer.Option(
+        True,
+        "--use-cache/--no-cache",
+        help="Use Ensembl cache for joining genome data (adds chromosome, position, etc.)"
+    ),
+    log: bool = typer.Option(
+        True,
+        "--log/--no-log",
+        help="Enable detailed logging to files"
+    ),
+):
+    """
+    Convert LongevityMap OakVar module data to annotated parquet format.
+    
+    This command:
+    1. Reads the LongevityMap SQLite database
+    2. Extracts allele weights, variants, and population data
+    3. Optionally joins with Ensembl genome data (adds chromosome, position, ref, alts)
+    4. Saves the result as a parquet file
+    """
+    from prepare_annotations.preparation.oakvar.convert_module import convert_longevitymap_data
+    from prepare_annotations.resource import get_cache_dir
+    
+    if log:
+        logs.mkdir(exist_ok=True, parents=True)
+        to_nice_file(logs / "prepare_longevitymap.json", logs / "prepare_longevitymap.log")
+        to_nice_stdout()
+    
+    with start_action(action_type="prepare_longevitymap_command") as action:
+        # Determine paths
+        if db_path is None:
+            db_path_resolved = Path("data/modules/just_longevitymap/longevitymap.sqlite")
+        else:
+            db_path_resolved = Path(db_path)
+        
+        if output_path is None:
+            output_path_resolved = Path("data/output/modules/longevitymap_annotations.parquet")
+        else:
+            output_path_resolved = Path(output_path)
+        
+        # Determine ensembl cache
+        ensembl_cache_resolved: Optional[Path] = None
+        if use_cache:
+            if ensembl_cache is None:
+                # Try standard cache location
+                cache = get_cache_dir()
+                ensembl_cache_resolved = cache / "ensembl" / "homo_sapiens"
+            else:
+                ensembl_cache_resolved = Path(ensembl_cache)
+        
+        action.log(
+            message_type="info",
+            db_path=str(db_path_resolved),
+            output_path=str(output_path_resolved),
+            ensembl_cache=str(ensembl_cache_resolved) if ensembl_cache_resolved else None,
+            use_cache=use_cache,
+        )
+        
+        # Check if db exists
+        if not db_path_resolved.exists():
+            console.print(f"[bold red]Error:[/bold red] Database not found: {db_path_resolved}")
+            raise typer.Exit(1)
+        
+        console.print(f"📁 Database: [bold blue]{db_path_resolved}[/bold blue]")
+        console.print(f"📦 Output: [bold blue]{output_path_resolved}[/bold blue]")
+        
+        if use_cache and ensembl_cache_resolved:
+            console.print(f"🧬 Ensembl cache: [bold blue]{ensembl_cache_resolved}[/bold blue]")
+        else:
+            console.print("[yellow]⚠️  Ensembl cache disabled - output will not include genome coordinates[/yellow]")
+        
+        console.print("\n🚀 Starting conversion...")
+        
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console,
+            transient=True
+        ) as progress:
+            task_id = progress.add_task("Converting LongevityMap data...", total=None)
+            
+            # Convert the data
+            result_lf = convert_longevitymap_data(
+                db_path=db_path_resolved,
+                ensembl_cache=ensembl_cache_resolved,
+            )
+            
+            # Collect and save
+            progress.update(task_id, description="Collecting and writing parquet...")
+            output_path_resolved.parent.mkdir(parents=True, exist_ok=True)
+            result_lf.collect().write_parquet(
+                output_path_resolved,
+                compression="zstd",
+                compression_level=14,
+            )
+            
+            progress.update(task_id, description="✅ Conversion completed")
+        
+        # Get file size
+        file_size_mb = output_path_resolved.stat().st_size / (1024 ** 2)
+        
+        console.print(f"\n✅ Conversion completed!")
+        console.print(f"📦 Output file: [bold cyan]{output_path_resolved}[/bold cyan]")
+        console.print(f"💾 File size: [bold]{file_size_mb:.2f} MB[/bold]")
+        
+        action.log(
+            message_type="success",
+            output_path=str(output_path_resolved),
+            file_size_mb=file_size_mb,
+        )
+
+
+@app.command()
 def version():
     """Show version information."""
     try:
