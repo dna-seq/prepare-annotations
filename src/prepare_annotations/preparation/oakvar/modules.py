@@ -236,10 +236,10 @@ def data(
         help="GitHub repository (owner/repo format or full URL). Default: dna-seq/just_longevitymap"
     ),
     extensions: list[str] = typer.Option(
-        [".sqlite", ".sqlite3", ".db"],
+        [".sqlite", ".sqlite3", ".db", ".tsv"],
         "--ext",
         "-e",
-        help="File extensions to search for. Default: .sqlite, .sqlite3, .db"
+        help="File extensions to search for. Default: .sqlite, .sqlite3, .db, .tsv"
     ),
     output_dir: Optional[str] = typer.Option(
         None,
@@ -506,6 +506,139 @@ def clone(
 
 
 @app.command()
+def convert_longevitymap(
+    db_path: Optional[str] = typer.Option(
+        None,
+        "--db-path",
+        help="Path to longevitymap SQLite database. Defaults to data/modules/just_longevitymap/longevitymap.sqlite"
+    ),
+    output_dir: Optional[str] = typer.Option(
+        None,
+        "--output-dir",
+        help="Output directory for parquet files. Defaults to data/output/modules/longevitymap/"
+    ),
+    ensembl_cache: Optional[str] = typer.Option(
+        None,
+        "--ensembl-cache",
+        help="Path to Ensembl cache directory for genotype construction. If not provided, will try standard cache location."
+    ),
+    curator: str = typer.Option(
+        "Olga Borysova",
+        "--curator",
+        help="Curator name for weights provenance"
+    ),
+    method: str = typer.Option(
+        "literature_review",
+        "--method",
+        help="Curation method for weights provenance"
+    ),
+    log: bool = typer.Option(
+        True,
+        "--log/--no-log",
+        help="Enable detailed logging to files"
+    ),
+):
+    """
+    Convert LongevityMap to unified annotation schema (three parquet files).
+    
+    This command converts the LongevityMap SQLite database to the unified schema:
+    - annotations.parquet: Variant-level facts (rsid, module, gene, phenotype, category)
+    - studies.parquet: Per-study evidence (rsid, module, pmid, population, p_value, conclusion, study_design)
+    - weights.parquet: Curator-defined scoring (rsid, genotype, module, weight, state, priority, conclusion, curator, method)
+    
+    The genotype field in weights is constructed by combining allele and zygosity,
+    with ref allele from Ensembl VCF for heterozygous variants.
+    """
+    from rich.progress import Progress, SpinnerColumn, TextColumn
+    from prepare_annotations.preparation.oakvar.convert_longevitymap import convert_longevitymap as do_convert
+    
+    if log:
+        logs.mkdir(exist_ok=True, parents=True)
+        to_nice_file(logs / "convert_longevitymap.json", logs / "convert_longevitymap.log")
+        to_nice_stdout()
+    
+    with start_action(action_type="convert_longevitymap_command") as action:
+        # Determine paths
+        if db_path is None:
+            db_path_resolved = Path("data/modules/just_longevitymap/longevitymap.sqlite")
+        else:
+            db_path_resolved = Path(db_path)
+        
+        if output_dir is None:
+            output_dir_resolved = Path("data/output/modules/longevitymap")
+        else:
+            output_dir_resolved = Path(output_dir)
+        
+        # Determine ensembl cache
+        ensembl_cache_resolved: Optional[Path] = None
+        if ensembl_cache is None:
+            # Try standard cache location
+            cache = get_cache_dir()
+            ensembl_cache_resolved = cache / "ensembl" / "homo_sapiens"
+            if not ensembl_cache_resolved.exists():
+                console.print(f"[yellow]⚠️  Ensembl cache not found at {ensembl_cache_resolved}[/yellow]")
+                console.print("[yellow]   Het genotypes will use '?' as placeholder for missing ref allele[/yellow]")
+                ensembl_cache_resolved = None
+        else:
+            ensembl_cache_resolved = Path(ensembl_cache)
+        
+        action.log(
+            message_type="info",
+            db_path=str(db_path_resolved),
+            output_dir=str(output_dir_resolved),
+            ensembl_cache=str(ensembl_cache_resolved) if ensembl_cache_resolved else None,
+            curator=curator,
+            method=method,
+        )
+        
+        # Check if db exists
+        if not db_path_resolved.exists():
+            console.print(f"[bold red]Error:[/bold red] Database not found: {db_path_resolved}")
+            raise typer.Exit(1)
+        
+        console.print(f"📁 Database: [bold blue]{db_path_resolved}[/bold blue]")
+        console.print(f"📦 Output: [bold blue]{output_dir_resolved}[/bold blue]")
+        console.print(f"👤 Curator: [bold blue]{curator}[/bold blue]")
+        console.print(f"📋 Method: [bold blue]{method}[/bold blue]")
+        
+        if ensembl_cache_resolved:
+            console.print(f"🧬 Ensembl cache: [bold blue]{ensembl_cache_resolved}[/bold blue]")
+        
+        console.print("\n🚀 Starting conversion to unified schema...")
+        
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console,
+            transient=True
+        ) as progress:
+            task_id = progress.add_task("Converting LongevityMap to unified schema...", total=None)
+            
+            # Convert the data
+            outputs = do_convert(
+                db_path=db_path_resolved,
+                output_dir=output_dir_resolved,
+                ensembl_cache=ensembl_cache_resolved,
+                curator=curator,
+                method=method,
+            )
+            
+            progress.update(task_id, description="✅ Conversion completed")
+        
+        console.print(f"\n✅ Conversion completed!")
+        console.print(f"\n📊 Output files:")
+        for name, path in outputs.items():
+            file_size_mb = path.stat().st_size / (1024 ** 2)
+            console.print(f"  - [bold cyan]{name}.parquet[/bold cyan]: {file_size_mb:.2f} MB")
+        
+        action.log(
+            message_type="success",
+            output_dir=str(output_dir_resolved),
+            outputs={k: str(v) for k, v in outputs.items()},
+        )
+
+
+@app.command()
 def install(
     repo: str = typer.Argument(
         ...,
@@ -557,4 +690,626 @@ def install(
         )
 
 
+@app.command()
+def convert_lipidmetabolism(
+    db_path: Optional[str] = typer.Option(
+        None,
+        "--db-path",
+        help="Path to lipid metabolism SQLite database. Defaults to data/modules/just_lipidmetabolism/lipid_metabolism.sqlite"
+    ),
+    output_dir: Optional[str] = typer.Option(
+        None,
+        "--output-dir",
+        help="Output directory for parquet files. Defaults to data/output/modules/lipidmetabolism/"
+    ),
+    curator: str = typer.Option(
+        "just-dna-seq",
+        "--curator",
+        help="Curator name for weights provenance"
+    ),
+    method: str = typer.Option(
+        "literature_review",
+        "--method",
+        help="Curation method for weights provenance"
+    ),
+    log: bool = typer.Option(
+        True,
+        "--log/--no-log",
+        help="Enable detailed logging to files"
+    ),
+):
+    """
+    Convert Lipid Metabolism to unified annotation schema (three parquet files).
+    """
+    from rich.progress import Progress, SpinnerColumn, TextColumn
+    from prepare_annotations.preparation.oakvar.convert_lipidmetabolism import convert_lipidmetabolism as do_convert
+    
+    if log:
+        logs.mkdir(exist_ok=True, parents=True)
+        to_nice_file(logs / "convert_lipidmetabolism.json", logs / "convert_lipidmetabolism.log")
+        to_nice_stdout()
+    
+    with start_action(action_type="convert_lipidmetabolism_command") as action:
+        if db_path is None:
+            db_path_resolved = Path("data/modules/just_lipidmetabolism/lipid_metabolism.sqlite")
+        else:
+            db_path_resolved = Path(db_path)
+        
+        if output_dir is None:
+            output_dir_resolved = Path("data/output/modules/lipidmetabolism")
+        else:
+            output_dir_resolved = Path(output_dir)
+        
+        if not db_path_resolved.exists():
+            console.print(f"[bold red]Error:[/bold red] Database not found: {db_path_resolved}")
+            raise typer.Exit(1)
+        
+        console.print(f"📁 Database: [bold blue]{db_path_resolved}[/bold blue]")
+        console.print(f"📦 Output: [bold blue]{output_dir_resolved}[/bold blue]")
+        
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console,
+            transient=True
+        ) as progress:
+            progress.add_task("Converting Lipid Metabolism to unified schema...", total=None)
+            outputs = do_convert(
+                db_path=db_path_resolved,
+                output_dir=output_dir_resolved,
+                curator=curator,
+                method=method,
+            )
+        
+        console.print(f"\n✅ Conversion completed!")
+        for name, path in outputs.items():
+            file_size_mb = path.stat().st_size / (1024 ** 2)
+            console.print(f"  - [bold cyan]{name}.parquet[/bold cyan]: {file_size_mb:.2f} MB")
+        
+        action.log(message_type="success", outputs={k: str(v) for k, v in outputs.items()})
+
+
+@app.command()
+def convert_vo2max(
+    db_path: Optional[str] = typer.Option(
+        None,
+        "--db-path",
+        help="Path to VO2max SQLite database. Defaults to data/modules/just_vo2max/vo2max.sqlite"
+    ),
+    output_dir: Optional[str] = typer.Option(
+        None,
+        "--output-dir",
+        help="Output directory for parquet files. Defaults to data/output/modules/vo2max/"
+    ),
+    curator: str = typer.Option(
+        "just-dna-seq",
+        "--curator",
+        help="Curator name for weights provenance"
+    ),
+    method: str = typer.Option(
+        "literature_review",
+        "--method",
+        help="Curation method for weights provenance"
+    ),
+    log: bool = typer.Option(
+        True,
+        "--log/--no-log",
+        help="Enable detailed logging to files"
+    ),
+):
+    """
+    Convert VO2max to unified annotation schema (three parquet files).
+    """
+    from rich.progress import Progress, SpinnerColumn, TextColumn
+    from prepare_annotations.preparation.oakvar.convert_vo2max import convert_vo2max as do_convert
+    
+    if log:
+        logs.mkdir(exist_ok=True, parents=True)
+        to_nice_file(logs / "convert_vo2max.json", logs / "convert_vo2max.log")
+        to_nice_stdout()
+    
+    with start_action(action_type="convert_vo2max_command") as action:
+        if db_path is None:
+            db_path_resolved = Path("data/modules/just_vo2max/vo2max.sqlite")
+        else:
+            db_path_resolved = Path(db_path)
+        
+        if output_dir is None:
+            output_dir_resolved = Path("data/output/modules/vo2max")
+        else:
+            output_dir_resolved = Path(output_dir)
+        
+        if not db_path_resolved.exists():
+            console.print(f"[bold red]Error:[/bold red] Database not found: {db_path_resolved}")
+            raise typer.Exit(1)
+        
+        console.print(f"📁 Database: [bold blue]{db_path_resolved}[/bold blue]")
+        console.print(f"📦 Output: [bold blue]{output_dir_resolved}[/bold blue]")
+        
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console,
+            transient=True
+        ) as progress:
+            progress.add_task("Converting VO2max to unified schema...", total=None)
+            outputs = do_convert(
+                db_path=db_path_resolved,
+                output_dir=output_dir_resolved,
+                curator=curator,
+                method=method,
+            )
+        
+        console.print(f"\n✅ Conversion completed!")
+        for name, path in outputs.items():
+            file_size_mb = path.stat().st_size / (1024 ** 2)
+            console.print(f"  - [bold cyan]{name}.parquet[/bold cyan]: {file_size_mb:.2f} MB")
+        
+        action.log(message_type="success", outputs={k: str(v) for k, v in outputs.items()})
+
+
+@app.command()
+def convert_superhuman(
+    db_path: Optional[str] = typer.Option(
+        None,
+        "--db-path",
+        help="Path to Superhuman SQLite database. Defaults to data/modules/just_superhuman/superhuman.sqlite"
+    ),
+    output_dir: Optional[str] = typer.Option(
+        None,
+        "--output-dir",
+        help="Output directory for parquet files. Defaults to data/output/modules/superhuman/"
+    ),
+    curator: str = typer.Option(
+        "just-dna-seq",
+        "--curator",
+        help="Curator name for weights provenance"
+    ),
+    method: str = typer.Option(
+        "literature_review",
+        "--method",
+        help="Curation method for weights provenance"
+    ),
+    log: bool = typer.Option(
+        True,
+        "--log/--no-log",
+        help="Enable detailed logging to files"
+    ),
+):
+    """
+    Convert Superhuman to unified annotation schema (three parquet files).
+    
+    Note: This module has no numeric weights - only qualitative annotations.
+    The weight column will be NULL, and state is derived from superability/adverse_effects.
+    """
+    from rich.progress import Progress, SpinnerColumn, TextColumn
+    from prepare_annotations.preparation.oakvar.convert_superhuman import convert_superhuman as do_convert
+    
+    if log:
+        logs.mkdir(exist_ok=True, parents=True)
+        to_nice_file(logs / "convert_superhuman.json", logs / "convert_superhuman.log")
+        to_nice_stdout()
+    
+    with start_action(action_type="convert_superhuman_command") as action:
+        if db_path is None:
+            db_path_resolved = Path("data/modules/just_superhuman/superhuman.sqlite")
+        else:
+            db_path_resolved = Path(db_path)
+        
+        if output_dir is None:
+            output_dir_resolved = Path("data/output/modules/superhuman")
+        else:
+            output_dir_resolved = Path(output_dir)
+        
+        if not db_path_resolved.exists():
+            console.print(f"[bold red]Error:[/bold red] Database not found: {db_path_resolved}")
+            raise typer.Exit(1)
+        
+        console.print(f"📁 Database: [bold blue]{db_path_resolved}[/bold blue]")
+        console.print(f"📦 Output: [bold blue]{output_dir_resolved}[/bold blue]")
+        
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console,
+            transient=True
+        ) as progress:
+            progress.add_task("Converting Superhuman to unified schema...", total=None)
+            outputs = do_convert(
+                db_path=db_path_resolved,
+                output_dir=output_dir_resolved,
+                curator=curator,
+                method=method,
+            )
+        
+        console.print(f"\n✅ Conversion completed!")
+        for name, path in outputs.items():
+            file_size_mb = path.stat().st_size / (1024 ** 2)
+            console.print(f"  - [bold cyan]{name}.parquet[/bold cyan]: {file_size_mb:.2f} MB")
+        
+        action.log(message_type="success", outputs={k: str(v) for k, v in outputs.items()})
+
+
+@app.command()
+def convert_coronary(
+    db_path: Optional[str] = typer.Option(
+        None,
+        "--db-path",
+        help="Path to Coronary Disease SQLite database. Defaults to data/modules/just_coronary/coronary.sqlite"
+    ),
+    output_dir: Optional[str] = typer.Option(
+        None,
+        "--output-dir",
+        help="Output directory for parquet files. Defaults to data/output/modules/coronary/"
+    ),
+    curator: str = typer.Option(
+        "just-dna-seq",
+        "--curator",
+        help="Curator name for weights provenance"
+    ),
+    method: str = typer.Option(
+        "gwas_literature",
+        "--method",
+        help="Curation method for weights provenance"
+    ),
+    log: bool = typer.Option(
+        True,
+        "--log/--no-log",
+        help="Enable detailed logging to files"
+    ),
+):
+    """
+    Convert Coronary Disease to unified annotation schema (three parquet files).
+    """
+    from rich.progress import Progress, SpinnerColumn, TextColumn
+    from prepare_annotations.preparation.oakvar.convert_coronary import convert_coronary as do_convert
+    
+    if log:
+        logs.mkdir(exist_ok=True, parents=True)
+        to_nice_file(logs / "convert_coronary.json", logs / "convert_coronary.log")
+        to_nice_stdout()
+    
+    with start_action(action_type="convert_coronary_command") as action:
+        if db_path is None:
+            db_path_resolved = Path("data/modules/just_coronary/coronary.sqlite")
+        else:
+            db_path_resolved = Path(db_path)
+        
+        if output_dir is None:
+            output_dir_resolved = Path("data/output/modules/coronary")
+        else:
+            output_dir_resolved = Path(output_dir)
+        
+        if not db_path_resolved.exists():
+            console.print(f"[bold red]Error:[/bold red] Database not found: {db_path_resolved}")
+            raise typer.Exit(1)
+        
+        console.print(f"📁 Database: [bold blue]{db_path_resolved}[/bold blue]")
+        console.print(f"📦 Output: [bold blue]{output_dir_resolved}[/bold blue]")
+        
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console,
+            transient=True
+        ) as progress:
+            progress.add_task("Converting Coronary Disease to unified schema...", total=None)
+            outputs = do_convert(
+                db_path=db_path_resolved,
+                output_dir=output_dir_resolved,
+                curator=curator,
+                method=method,
+            )
+        
+        console.print(f"\n✅ Conversion completed!")
+        for name, path in outputs.items():
+            file_size_mb = path.stat().st_size / (1024 ** 2)
+            console.print(f"  - [bold cyan]{name}.parquet[/bold cyan]: {file_size_mb:.2f} MB")
+        
+        action.log(message_type="success", outputs={k: str(v) for k, v in outputs.items()})
+
+
+@app.command()
+def convert_drugs(
+    tsv_path: Optional[str] = typer.Option(
+        None,
+        "--tsv-path",
+        help="Path to Drugs TSV file. Defaults to data/modules/just_drugs/annotation_tab.tsv"
+    ),
+    output_dir: Optional[str] = typer.Option(
+        None,
+        "--output-dir",
+        help="Output directory for parquet files. Defaults to data/output/modules/drugs/"
+    ),
+    curator: str = typer.Option(
+        "PharmGKB",
+        "--curator",
+        help="Curator name for weights provenance"
+    ),
+    method: str = typer.Option(
+        "pharmacogenomics_db",
+        "--method",
+        help="Curation method for weights provenance"
+    ),
+    log: bool = typer.Option(
+        True,
+        "--log/--no-log",
+        help="Enable detailed logging to files"
+    ),
+):
+    """
+    Convert Drugs (PharmGKB) to unified annotation schema (three parquet files).
+    
+    Note: This module uses TSV format and may not have complete genotype information.
+    """
+    from rich.progress import Progress, SpinnerColumn, TextColumn
+    from prepare_annotations.preparation.oakvar.convert_drugs import convert_drugs as do_convert
+    
+    if log:
+        logs.mkdir(exist_ok=True, parents=True)
+        to_nice_file(logs / "convert_drugs.json", logs / "convert_drugs.log")
+        to_nice_stdout()
+    
+    with start_action(action_type="convert_drugs_command") as action:
+        if tsv_path is None:
+            tsv_path_resolved = Path("data/modules/just_drugs/annotation_tab.tsv")
+        else:
+            tsv_path_resolved = Path(tsv_path)
+        
+        if output_dir is None:
+            output_dir_resolved = Path("data/output/modules/drugs")
+        else:
+            output_dir_resolved = Path(output_dir)
+        
+        if not tsv_path_resolved.exists():
+            console.print(f"[bold red]Error:[/bold red] TSV file not found: {tsv_path_resolved}")
+            raise typer.Exit(1)
+        
+        console.print(f"📁 TSV File: [bold blue]{tsv_path_resolved}[/bold blue]")
+        console.print(f"📦 Output: [bold blue]{output_dir_resolved}[/bold blue]")
+        
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console,
+            transient=True
+        ) as progress:
+            progress.add_task("Converting Drugs to unified schema...", total=None)
+            outputs = do_convert(
+                tsv_path=tsv_path_resolved,
+                output_dir=output_dir_resolved,
+                curator=curator,
+                method=method,
+            )
+        
+        console.print(f"\n✅ Conversion completed!")
+        for name, path in outputs.items():
+            file_size_mb = path.stat().st_size / (1024 ** 2)
+            console.print(f"  - [bold cyan]{name}.parquet[/bold cyan]: {file_size_mb:.2f} MB")
+        
+        action.log(message_type="success", outputs={k: str(v) for k, v in outputs.items()})
+
+
+@app.command()
+def convert_all(
+    modules_dir: Optional[str] = typer.Option(
+        None,
+        "--modules-dir",
+        help="Directory containing module data. Defaults to data/modules/"
+    ),
+    output_dir: Optional[str] = typer.Option(
+        None,
+        "--output-dir",
+        help="Root output directory for parquet files. Defaults to data/output/modules/"
+    ),
+    ensembl_cache: Optional[str] = typer.Option(
+        None,
+        "--ensembl-cache",
+        help="Path to Ensembl cache directory for longevitymap genotype construction."
+    ),
+    skip_missing: bool = typer.Option(
+        True,
+        "--skip-missing/--no-skip-missing",
+        help="Skip modules with missing data files instead of failing"
+    ),
+    log: bool = typer.Option(
+        True,
+        "--log/--no-log",
+        help="Enable detailed logging to files"
+    ),
+):
+    """
+    Convert ALL annotation modules to unified schema (three parquet files each).
+    
+    This command converts all available modules:
+    - longevitymap
+    - lipidmetabolism
+    - vo2max
+    - superhuman
+    - coronary
+    - drugs
+    
+    Example:
+        modules convert-all
+        modules convert-all --modules-dir /path/to/modules --output-dir /path/to/output
+    """
+    from rich.progress import Progress, SpinnerColumn, TextColumn
+    from rich.table import Table
+    
+    # Import all converters
+    from prepare_annotations.preparation.oakvar.convert_longevitymap import convert_longevitymap
+    from prepare_annotations.preparation.oakvar.convert_lipidmetabolism import convert_lipidmetabolism
+    from prepare_annotations.preparation.oakvar.convert_vo2max import convert_vo2max
+    from prepare_annotations.preparation.oakvar.convert_superhuman import convert_superhuman
+    from prepare_annotations.preparation.oakvar.convert_coronary import convert_coronary
+    from prepare_annotations.preparation.oakvar.convert_drugs import convert_drugs
+    
+    if log:
+        logs.mkdir(exist_ok=True, parents=True)
+        to_nice_file(logs / "convert_all.json", logs / "convert_all.log")
+        to_nice_stdout()
+    
+    with start_action(action_type="convert_all_command") as action:
+        # Resolve directories
+        if modules_dir is None:
+            modules_dir_resolved = Path("data/modules")
+        else:
+            modules_dir_resolved = Path(modules_dir)
+        
+        if output_dir is None:
+            output_dir_resolved = Path("data/output/modules")
+        else:
+            output_dir_resolved = Path(output_dir)
+        
+        # Determine ensembl cache - only use if explicitly provided
+        # (loading full Ensembl cache can be memory-intensive)
+        ensembl_cache_resolved: Optional[Path] = None
+        if ensembl_cache is not None:
+            ensembl_cache_resolved = Path(ensembl_cache)
+            if not ensembl_cache_resolved.exists():
+                console.print(f"[yellow]⚠️  Ensembl cache not found at {ensembl_cache_resolved}[/yellow]")
+                ensembl_cache_resolved = None
+        
+        console.print(f"📁 Modules directory: [bold blue]{modules_dir_resolved}[/bold blue]")
+        console.print(f"📦 Output directory: [bold blue]{output_dir_resolved}[/bold blue]")
+        console.print()
+        
+        # Define all modules to convert
+        modules_config = [
+            ("longevitymap", "just_longevitymap", "longevitymap.sqlite"),
+            ("lipidmetabolism", "just_lipidmetabolism", "lipid_metabolism.sqlite"),
+            ("vo2max", "just_vo2max", "vo2max.sqlite"),
+            ("superhuman", "just_superhuman", "superhuman.sqlite"),
+            ("coronary", "just_coronary", "coronary.sqlite"),
+            ("drugs", "just_drugs", "annotation_tab.tsv"),
+        ]
+        
+        results: list[dict] = []
+        
+        for name, folder, filename in modules_config:
+            db_path = modules_dir_resolved / folder / filename
+            module_output = output_dir_resolved / name
+            
+            console.print(f"🔄 Converting {name}...")
+            
+            if not db_path.exists():
+                if skip_missing:
+                    console.print(f"  ⚠️  Skipped: data not found at {db_path}")
+                    results.append({
+                        "module": name,
+                        "status": "skipped",
+                        "reason": f"Data file not found: {db_path}",
+                    })
+                    continue
+                else:
+                    console.print(f"[bold red]Error:[/bold red] Data file not found: {db_path}")
+                    raise typer.Exit(1)
+            
+            try:
+                if name == "longevitymap":
+                    outputs = convert_longevitymap(
+                        db_path=db_path,
+                        output_dir=module_output,
+                        ensembl_cache=ensembl_cache_resolved,
+                        curator="Olga Borysova",
+                        method="literature_review",
+                    )
+                elif name == "lipidmetabolism":
+                    outputs = convert_lipidmetabolism(
+                        db_path=db_path,
+                        output_dir=module_output,
+                        curator="just-dna-seq",
+                        method="literature_review",
+                    )
+                elif name == "vo2max":
+                    outputs = convert_vo2max(
+                        db_path=db_path,
+                        output_dir=module_output,
+                        curator="just-dna-seq",
+                        method="literature_review",
+                    )
+                elif name == "superhuman":
+                    outputs = convert_superhuman(
+                        db_path=db_path,
+                        output_dir=module_output,
+                        curator="just-dna-seq",
+                        method="literature_review",
+                    )
+                elif name == "coronary":
+                    outputs = convert_coronary(
+                        db_path=db_path,
+                        output_dir=module_output,
+                        curator="just-dna-seq",
+                        method="gwas_literature",
+                    )
+                elif name == "drugs":
+                    outputs = convert_drugs(
+                        tsv_path=db_path,
+                        output_dir=module_output,
+                        curator="PharmGKB",
+                        method="pharmacogenomics_db",
+                    )
+                else:
+                    continue
+                    
+                total_size = sum(p.stat().st_size for p in outputs.values())
+                console.print(f"  ✅ Success ({total_size / 1024:.1f} KB)")
+                results.append({
+                    "module": name,
+                    "status": "success",
+                    "outputs": outputs,
+                    "size_bytes": total_size,
+                })
+            except Exception as e:
+                console.print(f"  ❌ Failed: {e}")
+                results.append({
+                    "module": name,
+                    "status": "failed",
+                    "error": str(e),
+                })
+                if not skip_missing:
+                    raise
+        
+        console.print()
+        
+        # Display results table
+        table = Table(title="Conversion Results", show_header=True, header_style="bold magenta")
+        table.add_column("Module", style="cyan")
+        table.add_column("Status", style="green")
+        table.add_column("Size", justify="right")
+        table.add_column("Output Path", style="yellow")
+        
+        for result in results:
+            name = result["module"]
+            status = result["status"]
+            if status == "success":
+                size = f"{result['size_bytes'] / 1024:.1f} KB"
+                path = str(output_dir_resolved / name)
+                table.add_row(name, "✅ Success", size, path)
+            elif status == "skipped":
+                table.add_row(name, "⚠️ Skipped", "-", result["reason"])
+            else:
+                table.add_row(name, f"❌ Failed: {result.get('error', 'unknown')}", "-", "-")
+        
+        console.print(table)
+        
+        # Summary
+        success_count = sum(1 for r in results if r["status"] == "success")
+        skipped_count = sum(1 for r in results if r["status"] == "skipped")
+        failed_count = sum(1 for r in results if r["status"] == "failed")
+        
+        console.print()
+        console.print(f"[bold green]Completed: {success_count} modules converted[/bold green]")
+        if skipped_count:
+            console.print(f"[yellow]Skipped: {skipped_count} modules (data not found)[/yellow]")
+        if failed_count:
+            console.print(f"[bold red]Failed: {failed_count} modules[/bold red]")
+        
+        action.log(
+            message_type="success",
+            success_count=success_count,
+            skipped_count=skipped_count,
+            failed_count=failed_count,
+            results=[{k: str(v) if isinstance(v, Path) else v for k, v in r.items()} for r in results],
+        )
 

@@ -3,6 +3,7 @@
 Pytest configuration and shared fixtures for genobear tests.
 """
 
+import subprocess
 import pytest
 import tempfile
 import shutil
@@ -11,6 +12,116 @@ from pathlib import Path
 import pooch
 from pycomfort.logging import to_nice_stdout
 from prefect.testing.utilities import prefect_test_harness
+
+
+# =============================================================================
+# OakVar Module Data Download Helpers
+# =============================================================================
+
+# Mapping of module names to their GitHub repositories
+OAKVAR_MODULE_REPOS: dict[str, str] = {
+    "just_longevitymap": "dna-seq/just_longevitymap",
+    "just_pathogenic": "dna-seq/just_pathogenic",
+    "just_cancer": "dna-seq/just_cancer",
+    "just_coronary": "dna-seq/just_coronary",
+    "just_vo2max": "dna-seq/just_vo2max",
+    "just_lipidmetabolism": "dna-seq/just_lipidmetabolism",
+    "just_prs": "dna-seq/just_prs",
+    "just_drugs": "dna-seq/just_drugs",
+    "just_superhuman": "dna-seq/just_superhuman",
+}
+
+
+def download_oakvar_module_data(
+    module_name: str,
+    output_dir: Path | None = None,
+    extensions: list[str] | None = None,
+) -> Path:
+    """
+    Download data files from an OakVar module repository.
+    
+    Uses the `modules data` CLI command to clone the repository and extract
+    data files with the specified extensions.
+    
+    Args:
+        module_name: Name of the module (e.g., "just_longevitymap")
+        output_dir: Output directory for downloaded files.
+                    Defaults to data/modules/{module_name}/
+        extensions: File extensions to download (default: [".sqlite", ".sqlite3", ".db", ".tsv"])
+    
+    Returns:
+        Path to the output directory
+        
+    Raises:
+        ValueError: If module_name is not in OAKVAR_MODULE_REPOS
+        subprocess.CalledProcessError: If download fails
+    """
+    if module_name not in OAKVAR_MODULE_REPOS:
+        raise ValueError(
+            f"Unknown module: {module_name}. "
+            f"Known modules: {list(OAKVAR_MODULE_REPOS.keys())}"
+        )
+    
+    repo = OAKVAR_MODULE_REPOS[module_name]
+    
+    if output_dir is None:
+        output_dir = Path("data/modules") / module_name
+    
+    output_dir.parent.mkdir(parents=True, exist_ok=True)
+    
+    cmd = [
+        "uv", "run", "modules", "data",
+        "--repo", repo,
+        "--output-dir", str(output_dir),
+    ]
+    
+    if extensions:
+        for ext in extensions:
+            cmd.extend(["--ext", ext])
+    else:
+        # Default extensions include TSV for drugs module
+        for ext in [".sqlite", ".sqlite3", ".db", ".tsv"]:
+            cmd.extend(["--ext", ext])
+    
+    subprocess.run(cmd, check=True, capture_output=False)
+    
+    return output_dir
+
+
+def ensure_oakvar_module_data(
+    module_name: str,
+    output_dir: Path | None = None,
+    expected_file: str | None = None,
+) -> Path:
+    """
+    Ensure OakVar module data exists, downloading if necessary.
+    
+    Args:
+        module_name: Name of the module (e.g., "just_longevitymap")
+        output_dir: Output directory for downloaded files.
+                    Defaults to data/modules/{module_name}/
+        expected_file: Optional filename to check for existence.
+                       If provided, checks if this file exists.
+                       
+    Returns:
+        Path to the output directory
+    """
+    if output_dir is None:
+        output_dir = Path("data/modules") / module_name
+    
+    # Check if data already exists
+    needs_download = False
+    if not output_dir.exists():
+        needs_download = True
+    elif expected_file:
+        expected_path = output_dir / expected_file
+        if not expected_path.exists():
+            needs_download = True
+    
+    if needs_download:
+        download_oakvar_module_data(module_name, output_dir)
+    
+    return output_dir
 
 
 @pytest.fixture(scope="session", autouse=True)
