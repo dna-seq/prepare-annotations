@@ -453,12 +453,14 @@ class TestSchemaTransformation:
     """Test that schema transformations are correct."""
 
     def test_genotype_format_correct(self, weights_parquet: pl.DataFrame):
-        """Verify genotype column has correct format (e.g., 'CT', 'TT', 'AA')."""
+        """Verify genotype column has correct format (list of 2 alleles)."""
         genotypes = weights_parquet["genotype"].unique().to_list()
 
         for gt in genotypes:
-            assert len(gt) == 2, f"Invalid genotype format: {gt}"
-            assert gt.isalpha(), f"Genotype should be alphabetic: {gt}"
+            assert isinstance(gt, list) or hasattr(gt, "to_list"), f"Genotype should be a list, got {type(gt)}"
+            assert len(gt) == 2, f"Invalid genotype format (expected 2 alleles): {gt}"
+            for allele in gt:
+                assert allele.isalpha() or allele == "?", f"Allele should be alphabetic or '?', got: {allele}"
 
     def test_state_values_valid(self, weights_parquet: pl.DataFrame):
         """Verify state column has valid values."""

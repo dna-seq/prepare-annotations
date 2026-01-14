@@ -19,11 +19,11 @@ from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, FileSi
 from rich.table import Table
 from eliot import start_action
 
-from prepare_annotations.resource import get_cache_dir
+from prepare_annotations.paths import LOGS_DIR, MODULES_DIR, MODULES_OUTPUT_DIR, get_cache_dir
 from prepare_annotations.runtime import load_env
 from prepare_annotations.models import ModuleManifest, ModuleDependency
 
-logs = Path("logs") if Path("logs").exists() else Path.cwd().parent / "logs"
+logs = LOGS_DIR
 
 load_env()
 
@@ -550,7 +550,7 @@ def convert_longevitymap(
     with ref allele from Ensembl VCF for heterozygous variants.
     """
     from rich.progress import Progress, SpinnerColumn, TextColumn
-    from prepare_annotations.preparation.oakvar.convert_longevitymap import convert_longevitymap as do_convert
+    from prepare_annotations.convert_modules.longevitymap import convert_longevitymap as do_convert
     
     if log:
         logs.mkdir(exist_ok=True, parents=True)
@@ -560,15 +560,15 @@ def convert_longevitymap(
     with start_action(action_type="convert_longevitymap_command") as action:
         # Determine paths
         if db_path is None:
-            db_path_resolved = Path("data/modules/just_longevitymap/longevitymap.sqlite")
+            db_path_resolved = MODULES_DIR / "just_longevitymap" / "longevitymap.sqlite"
         else:
             db_path_resolved = Path(db_path)
-        
+
         if output_dir is None:
-            output_dir_resolved = Path("data/output/modules/longevitymap")
+            output_dir_resolved = MODULES_OUTPUT_DIR / "longevitymap"
         else:
             output_dir_resolved = Path(output_dir)
-        
+
         # Determine ensembl cache
         ensembl_cache_resolved: Optional[Path] = None
         if ensembl_cache is None:
@@ -722,7 +722,7 @@ def convert_lipidmetabolism(
     Convert Lipid Metabolism to unified annotation schema (three parquet files).
     """
     from rich.progress import Progress, SpinnerColumn, TextColumn
-    from prepare_annotations.preparation.oakvar.convert_lipidmetabolism import convert_lipidmetabolism as do_convert
+    from prepare_annotations.convert_modules.lipidmetabolism import convert_lipidmetabolism as do_convert
     
     if log:
         logs.mkdir(exist_ok=True, parents=True)
@@ -731,15 +731,15 @@ def convert_lipidmetabolism(
     
     with start_action(action_type="convert_lipidmetabolism_command") as action:
         if db_path is None:
-            db_path_resolved = Path("data/modules/just_lipidmetabolism/lipid_metabolism.sqlite")
+            db_path_resolved = MODULES_DIR / "just_lipidmetabolism" / "lipid_metabolism.sqlite"
         else:
             db_path_resolved = Path(db_path)
-        
+
         if output_dir is None:
-            output_dir_resolved = Path("data/output/modules/lipidmetabolism")
+            output_dir_resolved = MODULES_OUTPUT_DIR / "lipidmetabolism"
         else:
             output_dir_resolved = Path(output_dir)
-        
+
         if not db_path_resolved.exists():
             console.print(f"[bold red]Error:[/bold red] Database not found: {db_path_resolved}")
             raise typer.Exit(1)
@@ -801,7 +801,7 @@ def convert_vo2max(
     Convert VO2max to unified annotation schema (three parquet files).
     """
     from rich.progress import Progress, SpinnerColumn, TextColumn
-    from prepare_annotations.preparation.oakvar.convert_vo2max import convert_vo2max as do_convert
+    from prepare_annotations.convert_modules.vo2max import convert_vo2max as do_convert
     
     if log:
         logs.mkdir(exist_ok=True, parents=True)
@@ -810,15 +810,15 @@ def convert_vo2max(
     
     with start_action(action_type="convert_vo2max_command") as action:
         if db_path is None:
-            db_path_resolved = Path("data/modules/just_vo2max/vo2max.sqlite")
+            db_path_resolved = MODULES_DIR / "just_vo2max" / "vo2max.sqlite"
         else:
             db_path_resolved = Path(db_path)
-        
+
         if output_dir is None:
-            output_dir_resolved = Path("data/output/modules/vo2max")
+            output_dir_resolved = MODULES_OUTPUT_DIR / "vo2max"
         else:
             output_dir_resolved = Path(output_dir)
-        
+
         if not db_path_resolved.exists():
             console.print(f"[bold red]Error:[/bold red] Database not found: {db_path_resolved}")
             raise typer.Exit(1)
@@ -883,7 +883,7 @@ def convert_superhuman(
     The weight column will be NULL, and state is derived from superability/adverse_effects.
     """
     from rich.progress import Progress, SpinnerColumn, TextColumn
-    from prepare_annotations.preparation.oakvar.convert_superhuman import convert_superhuman as do_convert
+    from prepare_annotations.convert_modules.superhuman import convert_superhuman as do_convert
     
     if log:
         logs.mkdir(exist_ok=True, parents=True)
@@ -892,15 +892,15 @@ def convert_superhuman(
     
     with start_action(action_type="convert_superhuman_command") as action:
         if db_path is None:
-            db_path_resolved = Path("data/modules/just_superhuman/superhuman.sqlite")
+            db_path_resolved = MODULES_DIR / "just_superhuman" / "superhuman.sqlite"
         else:
             db_path_resolved = Path(db_path)
-        
+
         if output_dir is None:
-            output_dir_resolved = Path("data/output/modules/superhuman")
+            output_dir_resolved = MODULES_OUTPUT_DIR / "superhuman"
         else:
             output_dir_resolved = Path(output_dir)
-        
+
         if not db_path_resolved.exists():
             console.print(f"[bold red]Error:[/bold red] Database not found: {db_path_resolved}")
             raise typer.Exit(1)
@@ -962,7 +962,7 @@ def convert_coronary(
     Convert Coronary Disease to unified annotation schema (three parquet files).
     """
     from rich.progress import Progress, SpinnerColumn, TextColumn
-    from prepare_annotations.preparation.oakvar.convert_coronary import convert_coronary as do_convert
+    from prepare_annotations.convert_modules.coronary import convert_coronary as do_convert
     
     if log:
         logs.mkdir(exist_ok=True, parents=True)
@@ -971,15 +971,15 @@ def convert_coronary(
     
     with start_action(action_type="convert_coronary_command") as action:
         if db_path is None:
-            db_path_resolved = Path("data/modules/just_coronary/coronary.sqlite")
+            db_path_resolved = MODULES_DIR / "just_coronary" / "coronary.sqlite"
         else:
             db_path_resolved = Path(db_path)
-        
+
         if output_dir is None:
-            output_dir_resolved = Path("data/output/modules/coronary")
+            output_dir_resolved = MODULES_OUTPUT_DIR / "coronary"
         else:
             output_dir_resolved = Path(output_dir)
-        
+
         if not db_path_resolved.exists():
             console.print(f"[bold red]Error:[/bold red] Database not found: {db_path_resolved}")
             raise typer.Exit(1)
@@ -1043,7 +1043,7 @@ def convert_drugs(
     Note: This module uses TSV format and may not have complete genotype information.
     """
     from rich.progress import Progress, SpinnerColumn, TextColumn
-    from prepare_annotations.preparation.oakvar.convert_drugs import convert_drugs as do_convert
+    from prepare_annotations.convert_modules.drugs import convert_drugs as do_convert
     
     if log:
         logs.mkdir(exist_ok=True, parents=True)
@@ -1137,12 +1137,12 @@ def convert_all(
     from rich.table import Table
     
     # Import all converters
-    from prepare_annotations.preparation.oakvar.convert_longevitymap import convert_longevitymap
-    from prepare_annotations.preparation.oakvar.convert_lipidmetabolism import convert_lipidmetabolism
-    from prepare_annotations.preparation.oakvar.convert_vo2max import convert_vo2max
-    from prepare_annotations.preparation.oakvar.convert_superhuman import convert_superhuman
-    from prepare_annotations.preparation.oakvar.convert_coronary import convert_coronary
-    from prepare_annotations.preparation.oakvar.convert_drugs import convert_drugs
+    from prepare_annotations.convert_modules.longevitymap import convert_longevitymap
+    from prepare_annotations.convert_modules.lipidmetabolism import convert_lipidmetabolism
+    from prepare_annotations.convert_modules.vo2max import convert_vo2max
+    from prepare_annotations.convert_modules.superhuman import convert_superhuman
+    from prepare_annotations.convert_modules.coronary import convert_coronary
+    from prepare_annotations.convert_modules.drugs import convert_drugs
     
     if log:
         logs.mkdir(exist_ok=True, parents=True)
@@ -1152,12 +1152,12 @@ def convert_all(
     with start_action(action_type="convert_all_command") as action:
         # Resolve directories
         if modules_dir is None:
-            modules_dir_resolved = Path("data/modules")
+            modules_dir_resolved = MODULES_DIR
         else:
             modules_dir_resolved = Path(modules_dir)
         
         if output_dir is None:
-            output_dir_resolved = Path("data/output/modules")
+            output_dir_resolved = MODULES_OUTPUT_DIR
         else:
             output_dir_resolved = Path(output_dir)
         

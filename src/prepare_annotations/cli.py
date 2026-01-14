@@ -8,6 +8,7 @@ parallelization, caching, and pipeline composition.
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
 from typing import Optional, List
 
@@ -15,8 +16,8 @@ import typer
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from eliot import start_action
-from prepare_annotations.preparation.huggingface_uploader import collect_parquet_files
-from prepare_annotations.preparation.dataset_card_generator import (
+from prepare_annotations.huggingface_uploader import collect_parquet_files
+from prepare_annotations.dataset_card_generator import (
     generate_ensembl_card, 
     generate_clinvar_card,
     generate_dbsnp_card,
@@ -26,8 +27,9 @@ from prepare_annotations.preparation.dataset_card_generator import (
 from huggingface_hub import HfApi
 
 from prepare_annotations.runtime import load_env
+from prepare_annotations.paths import LOGS_DIR, get_default_input_dir, get_default_output_dir
 
-logs = Path("logs") if Path("logs").exists() else Path.cwd() / "logs"
+logs = LOGS_DIR
 
 load_env()
 
@@ -43,10 +45,8 @@ if "POLARS_ENGINE_AFFINITY" not in os.environ:
 if "POLARS_LOW_MEMORY" not in os.environ:
     os.environ["POLARS_LOW_MEMORY"] = "1"
 
-from prepare_annotations.preparation.pipelines import (
+from prepare_annotations.pipelines import (
     PreparationPipelines,
-    get_default_input_dir,
-    get_default_output_dir,
 )
 from pycomfort.logging import to_nice_file, to_nice_stdout
 
@@ -787,6 +787,234 @@ def gnomad(
 
 
 @app.command()
+def genome(
+    species: str = typer.Option(
+        "homo_sapiens",
+        "--species",
+        help="Species name (e.g., homo_sapiens, mus_musculus)"
+    ),
+    genome_type: str = typer.Option(
+        "primary_assembly",
+        "--type",
+        help="Genome type: primary_assembly (default), toplevel, or chromosome"
+    ),
+    masking: str = typer.Option(
+        "dna",
+        "--masking",
+        help="DNA masking: dna (unmasked, default), dna_sm (soft-masked), dna_rm (repeat-masked)"
+    ),
+    release: Optional[int] = typer.Option(
+        None,
+        "--release",
+        help="Ensembl release number (e.g., 114). If not specified, uses latest release."
+    ),
+    chromosome: Optional[str] = typer.Option(
+        None,
+        "--chromosome",
+        help="Chromosome name for --type=chromosome (e.g., 1, 21, X, MT)"
+    ),
+    all_chromosomes: bool = typer.Option(
+        False,
+        "--all-chromosomes",
+        help="Download all individual chromosome files instead of primary assembly"
+    ),
+    chromosomes: Optional[str] = typer.Option(
+        None,
+        "--chromosomes",
+        help="Comma-separated list of chromosomes to download (e.g., '1,2,3,X,Y'). Only used with --all-chromosomes."
+    ),
+    dest_dir: Optional[str] = typer.Option(
+        None,
+        "--dest-dir",
+        help="Destination directory for downloads. If not specified, uses standard cache directory."
+    ),
+    force: bool = typer.Option(
+        False,
+        "--force/--no-force",
+        help="Force re-download even if files exist"
+    ),
+    use_ftp: bool = typer.Option(
+        False,
+        "--ftp/--http",
+        help="Use FTP instead of HTTP (HTTP is usually faster)"
+    ),
+    list_available: bool = typer.Option(
+        False,
+        "--list",
+        help="List available genome files instead of downloading"
+    ),
+    index: bool = typer.Option(
+        True,
+        "--index/--no-index",
+        help="Create an uncompressed .fa and .fa.fai index for random-access tools",
+    ),
+    log: bool = typer.Option(
+        True,
+        "--log/--no-log",
+        help="Enable detailed logging"
+    ),
+):
+    """
+    Download Ensembl reference genome FASTA files.
+    
+    This command downloads genome sequences from the Ensembl FTP server.
+    By default, it downloads the primary assembly (main chromosomes without
+    alternative/patch sequences).
+    
+    Examples:
+    
+        # Download latest human primary assembly
+        uv run prepare-annotations genome
+        
+        # Download specific Ensembl release
+        uv run prepare-annotations genome --release 114
+        
+        # Download soft-masked toplevel genome
+        uv run prepare-annotations genome --type toplevel --masking dna_sm
+        
+        # Download a single chromosome
+        uv run prepare-annotations genome --type chromosome --chromosome 21
+        
+        # Download all chromosomes separately
+        uv run prepare-annotations genome --all-chromosomes
+        
+        # Download specific chromosomes
+        uv run prepare-annotations genome --all-chromosomes --chromosomes "1,2,X,Y"
+        
+        # List available files
+        uv run prepare-annotations genome --list
+        
+        # Download mouse genome
+        uv run prepare-annotations genome --species mus_musculus
+    """
+    from prepare_annotations.genome_downloader import (
+        GenomeType,
+        MaskingType,
+        download_ensembl_genome,
+        download_all_chromosomes,
+        list_available_genomes,
+    )
+    
+    if log:
+        logs.mkdir(exist_ok=True, parents=True)
+        to_nice_file(logs / "download_genome.json", logs / "download_genome.log")
+        to_nice_stdout()
+    
+    with start_action(action_type="download_genome_command") as action:
+        # Parse enums
+        try:
+            genome_type_enum = GenomeType(genome_type)
+        except ValueError:
+            console.print(f"[bold red]Error:[/bold red] Invalid genome type '{genome_type}'. Valid options: primary_assembly, toplevel, chromosome")
+            raise typer.Exit(1)
+        
+        try:
+            masking_enum = MaskingType(masking)
+        except ValueError:
+            console.print(f"[bold red]Error:[/bold red] Invalid masking type '{masking}'. Valid options: dna, dna_sm, dna_rm")
+            raise typer.Exit(1)
+        
+        use_http = not use_ftp
+        cache_dir = Path(dest_dir) if dest_dir else None
+        
+        action.log(
+            message_type="info",
+            species=species,
+            genome_type=genome_type,
+            masking=masking,
+            release=release,
+            chromosome=chromosome,
+            all_chromosomes=all_chromosomes,
+            use_http=use_http,
+        )
+        
+        # List mode
+        if list_available:
+            console.print(f"\n📋 Available genome files for [bold cyan]{species}[/bold cyan]")
+            if release:
+                console.print(f"   Release: [bold]{release}[/bold]")
+            else:
+                console.print("   Release: [bold]latest[/bold]")
+            console.print()
+            
+            files = list_available_genomes(species, release, use_http)
+            for f in sorted(files):
+                filename = f.rsplit("/", 1)[-1]
+                console.print(f"  • {filename}")
+            
+            console.print(f"\n  Total: [bold]{len(files)}[/bold] files")
+            return
+        
+        # Validation
+        if genome_type_enum == GenomeType.CHROMOSOME and not chromosome and not all_chromosomes:
+            console.print("[bold red]Error:[/bold red] --chromosome is required when --type=chromosome (unless using --all-chromosomes)")
+            raise typer.Exit(1)
+        
+        console.print(f"\n🧬 Downloading Ensembl genome")
+        console.print(f"   Species: [bold cyan]{species}[/bold cyan]")
+        console.print(f"   Type: [bold]{genome_type}[/bold]")
+        console.print(f"   Masking: [bold]{masking}[/bold]")
+        if release:
+            console.print(f"   Release: [bold]{release}[/bold]")
+        else:
+            console.print("   Release: [bold]latest[/bold]")
+        console.print()
+        
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console,
+            transient=True
+        ) as progress:
+            if all_chromosomes:
+                task_id = progress.add_task("Downloading chromosomes...", total=None)
+                
+                chr_list = None
+                if chromosomes:
+                    chr_list = [c.strip() for c in chromosomes.split(",")]
+                
+                downloaded = download_all_chromosomes(
+                    species=species,
+                    masking=masking_enum,
+                    release=release,
+                    cache_dir=cache_dir,
+                    force_download=force,
+                    create_fai=index,
+                    use_http=use_http,
+                    chromosomes=chr_list,
+                )
+                
+                progress.update(task_id, description="✅ Downloads completed")
+                
+                console.print(f"\n✅ Downloaded {len(downloaded)} chromosome files:")
+                for p in sorted(downloaded):
+                    size_mb = p.stat().st_size / (1024 ** 2)
+                    console.print(f"   📁 {p.name} ({size_mb:.1f} MB)")
+            else:
+                task_id = progress.add_task("Downloading genome...", total=None)
+                
+                downloaded = download_ensembl_genome(
+                    species=species,
+                    genome_type=genome_type_enum,
+                    masking=masking_enum,
+                    release=release,
+                    chromosome=chromosome,
+                    cache_dir=cache_dir,
+                    force_download=force,
+                    create_fai=index,
+                    use_http=use_http,
+                )
+                
+                progress.update(task_id, description="✅ Download completed")
+                
+                size_mb = downloaded.stat().st_size / (1024 ** 2)
+                console.print(f"\n✅ Downloaded: [bold cyan]{downloaded}[/bold cyan]")
+                console.print(f"   Size: [bold]{size_mb:.1f} MB[/bold]")
+        
+        action.log(message_type="success", step="genome_download_complete")
+
+
+@app.command()
 def upload_clinvar(
     source_dir: Optional[str] = typer.Option(None, "--source-dir"),
     repo_id: str = typer.Option("just-dna-seq/clinvar", "--repo-id"),
@@ -1008,8 +1236,8 @@ def longevitymap(
     3. Optionally joins with Ensembl genome data (adds chromosome, position, ref, alts)
     4. Saves the result as a parquet file
     """
-    from prepare_annotations.preparation.oakvar.convert_module import convert_longevitymap_data
-    from prepare_annotations.resource import get_cache_dir
+    from prepare_annotations.convert_modules.common import convert_longevitymap_data
+    from prepare_annotations.paths import get_cache_dir
     
     if log:
         logs.mkdir(exist_ok=True, parents=True)
@@ -1100,6 +1328,405 @@ def longevitymap(
         )
 
 
+# ============================================================================
+# DAGSTER COMMANDS
+# ============================================================================
+
+dagster_app = typer.Typer(
+    name="dagster",
+    help="Dagster-based pipelines (alternative to Prefect)",
+    no_args_is_help=True
+)
+app.add_typer(dagster_app, name="dagster")
+
+
+def _get_dagster_home() -> Path:
+    """Get or create DAGSTER_HOME directory (resolved relative to repo root).
+
+    Mirrors the `just-dna-lite` approach:
+    - If DAGSTER_HOME is set and is relative, interpret it relative to ROOT_DIR.
+    - If DAGSTER_HOME is not set, default to ROOT_DIR/data/interim/dagster.
+    - Always set DAGSTER_HOME to an absolute path to avoid Dagster writing into CWD.
+    """
+
+    def _resolve_dagster_home(root: Path, raw: str | None) -> Path:
+        value = raw or "data/interim/dagster"
+        p = Path(value)
+        if not p.is_absolute():
+            p = (root / p).resolve()
+        return p
+
+    # Import at call-time so tests (and callers) can override paths.ROOT_DIR if needed.
+    from prepare_annotations import paths as _paths
+
+    dagster_home_path = _resolve_dagster_home(_paths.ROOT_DIR, os.environ.get("DAGSTER_HOME"))
+    dagster_home_path.mkdir(parents=True, exist_ok=True)
+    os.environ["DAGSTER_HOME"] = str(dagster_home_path)
+    return dagster_home_path
+
+
+def dagster_ui_entry() -> None:
+    """Standalone entrypoint (console script) that starts Dagster UI with our DAGSTER_HOME.
+
+    This is intentionally NOT a Typer command: console_scripts call functions directly,
+    and Typer-style defaults (typer.Option(...)) are not valid when invoked that way.
+    """
+    import sys
+    import subprocess
+
+    dagster_home = _get_dagster_home()
+    _ensure_dagster_config(dagster_home)
+
+    # Run Dagster in the foreground (like `uv run dagster-ui` in just-dna-lite).
+    env = os.environ.copy()
+    env["DAGSTER_HOME"] = str(dagster_home)
+
+    cmd = [
+        sys.executable,
+        "-m",
+        "dagster",
+        "dev",
+        "-m",
+        "prepare_annotations.pipelines_dagster",
+        "-p",
+        "3000",
+        "-h",
+        "127.0.0.1",
+    ]
+    subprocess.run(cmd, env=env, check=False)
+
+
+def _kill_port_owner(port: int, host: str = "127.0.0.1") -> None:
+    """Kill the process listening on host:port (best-effort)."""
+    import signal
+    import socket
+    import subprocess
+
+    # If nothing is listening, do nothing.
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        if s.connect_ex((host, port)) != 0:
+            return
+
+    # Prefer lsof, fallback to fuser.
+    result = subprocess.run(
+        ["lsof", "-t", "-n", "-P", f"-iTCP:{port}", "-sTCP:LISTEN"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    pids = [p for p in result.stdout.strip().split() if p]
+    if not pids:
+        result = subprocess.run(
+            ["fuser", f"{port}/tcp"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode == 0:
+            # fuser output: "3000/tcp:  1234 5678"
+            tail = result.stdout.split(":")[-1].strip()
+            pids = [p for p in tail.split() if p]
+
+    for pid_str in pids:
+        try:
+            pid = int(pid_str)
+        except ValueError:
+            continue
+        if pid == os.getpid():
+            continue
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            continue
+
+
+def _ensure_dagster_config(dagster_home: Path) -> None:
+    """Create dagster.yaml if it doesn't exist."""
+    config_file = dagster_home / "dagster.yaml"
+    if config_file.exists():
+        return
+    
+    dagster_home.mkdir(parents=True, exist_ok=True)
+    config_content = """# Dagster instance configuration
+auto_materialize:
+  enabled: true
+  minimum_interval_seconds: 60
+
+telemetry:
+  enabled: false
+"""
+    config_file.write_text(config_content, encoding="utf-8")
+    console.print(f"   [green]✔[/green] Created Dagster config at {config_file}")
+
+
+def _start_dagster_ui_background(port: int = 3000, host: str = "127.0.0.1"):
+    """Start Dagster UI in background."""
+    import subprocess
+    import sys
+    
+    dagster_home = _get_dagster_home()
+    _ensure_dagster_config(dagster_home)
+    
+    env = os.environ.copy()
+    env["DAGSTER_HOME"] = str(dagster_home)
+    
+    cmd = [
+        sys.executable, "-m", "dagster", "dev",
+        "-m", "prepare_annotations.pipelines_dagster",
+        "-p", str(port),
+        "-h", host,
+    ]
+    subprocess.Popen(
+        cmd,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+        env=env,
+    )
+
+
+def _ensure_dagster_ui_running(
+    port: int = 3000,
+    host: str = "127.0.0.1",
+    *,
+    force_restart: bool = True,
+) -> bool:
+    """Ensure Dagster UI is running (and points at our DAGSTER_HOME).
+
+    We default to force-restarting any existing server on the port to avoid
+    the common "UI is running but shows no runs" problem caused by mismatched
+    DAGSTER_HOME between the UI process and the CLI process.
+    """
+    import socket
+    
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        is_running = s.connect_ex((host, port)) == 0
+    
+    if is_running:
+        if not force_restart:
+            console.print(f"   [green]✔[/green] Dagster UI running at http://{host}:{port}")
+            return False
+
+        console.print(
+            "   [yellow]↻[/yellow] Restarting Dagster UI to ensure it uses the same DAGSTER_HOME..."
+        )
+        _kill_port_owner(port=port, host=host)
+    
+    console.print(f"   [yellow]⏳[/yellow] Starting Dagster UI in background...")
+    _start_dagster_ui_background(port, host)
+    
+    for _ in range(20):
+        time.sleep(0.5)
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            if s.connect_ex((host, port)) == 0:
+                console.print(f"   [green]✔[/green] Dagster UI started at http://{host}:{port}")
+                return True
+    
+    console.print(f"   [yellow]![/yellow] UI may still be starting...")
+    return True
+
+
+@dagster_app.command(name="run")
+def dagster_run_ensembl(
+    job_name: str = typer.Option(
+        "full",
+        "--job", "-j",
+        help="Job name: full, prepare, download, convert, upload"
+    ),
+    species: str = typer.Option(
+        "homo_sapiens",
+        "--species",
+        help="Species name"
+    ),
+):
+    """
+    Run Ensembl pipeline (default: full pipeline with upload).
+    
+    Jobs: full (default), prepare, download, convert, upload
+    
+    Starts Dagster UI in background for monitoring.
+    """
+    from dagster import DagsterInstance
+    
+    # Set up DAGSTER_HOME
+    dagster_home = _get_dagster_home()
+    _ensure_dagster_config(dagster_home)
+    
+    console.print(f"\n[bold cyan]🔷 Running Dagster Job: {job_name}[/bold cyan]")
+    console.print(f"   Species: [bold blue]{species}[/bold blue]")
+    console.print(f"   Dagster home: {dagster_home}")
+    
+    # Start UI in background if not running
+    _ensure_dagster_ui_running(force_restart=True)
+    
+    console.print("\n🚀 Executing pipeline...\n")
+    console.print("   Monitor progress at: http://127.0.0.1:3000\n")
+
+    # Import the job from definitions
+    from prepare_annotations.pipelines_dagster.definitions import defs
+    
+    # Get the job by name (using resolve_job_def for Dagster 1.11+)
+    try:
+        job = defs.resolve_job_def(job_name)
+    except Exception:
+        console.print(f"[bold red]❌ Job '{job_name}' not found![/bold red]")
+        console.print("Available jobs: full, prepare, download, convert, upload")
+        raise typer.Exit(1)
+    
+    # Execute the job with a persistent instance (visible in UI)
+    with DagsterInstance.get() as instance:
+        result = job.execute_in_process(
+            instance=instance,
+            run_config={
+                "ops": {
+                    "ensembl_vcf_urls": {"config": {"species": species}},
+                    "ensembl_vcf_files": {"config": {"species": species}},
+                }
+            },
+        )
+    
+    if result.success:
+        console.print(f"\n[bold green]✅ Job '{job_name}' completed successfully![/bold green]")
+    else:
+        console.print(f"\n[bold red]❌ Job '{job_name}' failed![/bold red]")
+        raise typer.Exit(1)
+
+
+@app.command(name="dagster-prepare")
+def top_level_dagster_prepare():
+    """Shortcut to run the full Ensembl Dagster pipeline with defaults."""
+    dagster_run_ensembl(job_name="full", species="homo_sapiens")
+
+
+@dagster_app.command(name="ui")
+def dagster_ui(
+    port: int = typer.Option(3000, "--port", "-p", help="Port for Dagster webserver"),
+    host: str = typer.Option("127.0.0.1", "--host", help="Host for Dagster webserver"),
+):
+    """
+    Start Dagster web UI for interactive job execution and lineage visualization.
+    """
+    import subprocess
+    import sys
+    
+    dagster_home = _get_dagster_home()
+    _ensure_dagster_config(dagster_home)
+    os.environ["DAGSTER_HOME"] = str(dagster_home)
+
+    console.print("\n[bold cyan]🔷 Starting Dagster UI[/bold cyan]")
+    console.print(f"   URL: http://{host}:{port}")
+    console.print(f"   Dagster home: {dagster_home}")
+    console.print("\n[dim]Press Ctrl+C to stop[/dim]\n")
+    
+    cmd = [
+        sys.executable, "-m", "dagster", "dev",
+        "-m", "prepare_annotations.pipelines_dagster",
+        "-p", str(port),
+        "-h", host,
+    ]
+    
+    subprocess.run(cmd)
+
+
+@dagster_app.command(name="materialize")
+def dagster_materialize(
+    assets: List[str] = typer.Argument(
+        ...,
+        help="Asset names to materialize (e.g., ensembl_vcf_urls ensembl_vcf_files)"
+    ),
+):
+    """
+    Materialize specific Dagster assets.
+    
+    Examples:
+        # Materialize VCF URL discovery
+        uv run prepare-annotations dagster materialize ensembl_vcf_urls
+        
+        # Materialize full pipeline
+        uv run prepare-annotations dagster materialize ensembl_vcf_urls ensembl_vcf_files ensembl_parquet_files
+    """
+    import subprocess
+    import sys
+    
+    console.print(f"\n[bold cyan]🔷 Materializing Assets[/bold cyan]")
+    console.print(f"   Assets: {', '.join(assets)}")
+    console.print()
+    
+    cmd = [
+        sys.executable, "-m", "dagster", "asset", "materialize",
+        "-m", "prepare_annotations.pipelines_dagster.definitions",
+        "--select", *assets,
+    ]
+    
+    subprocess.run(cmd)
+
+
+@dagster_app.command(name="job")
+def dagster_job(
+    job_name: str = typer.Argument(
+        ...,
+        help="Job: full, prepare, download, convert, upload"
+    ),
+):
+    """
+    Execute a Dagster job by name.
+    
+    Jobs: full, prepare, download, convert, upload
+    """
+    import subprocess
+    import sys
+    
+    console.print(f"\n[bold cyan]🔷 Executing Job[/bold cyan]")
+    console.print(f"   Job: {job_name}")
+    console.print()
+    
+    cmd = [
+        sys.executable, "-m", "dagster", "job", "execute",
+        "-m", "prepare_annotations.pipelines_dagster.definitions",
+        "-j", job_name,
+    ]
+    
+    subprocess.run(cmd)
+
+
+@dagster_app.command(name="assets")
+def dagster_list_assets():
+    """List all available Dagster assets."""
+    console.print("\n[bold cyan]🔷 Available Dagster Assets[/bold cyan]\n")
+    
+    assets = [
+        ("ensembl_ftp_source", "External", "Ensembl FTP server (source of truth)"),
+        ("ensembl_vcf_urls", "Discovery", "Discovered VCF file URLs from Ensembl FTP"),
+        ("ensembl_vcf_files", "Download", "Downloaded VCF files from Ensembl"),
+        ("ensembl_parquet_files", "Conversion", "VCF files converted to Parquet"),
+        ("ensembl_hf_upload", "Upload", "Upload to HuggingFace Hub"),
+    ]
+    
+    for name, kind, description in assets:
+        console.print(f"  [bold green]{name}[/bold green] [{kind}]")
+        console.print(f"      {description}")
+        console.print()
+
+
+@dagster_app.command(name="jobs")
+def dagster_list_jobs():
+    """List all available Dagster jobs."""
+    console.print("\n[bold cyan]🔷 Available Dagster Jobs[/bold cyan]\n")
+    
+    jobs = [
+        ("full", "Complete pipeline: download → convert → upload (default)"),
+        ("prepare", "Download and convert to Parquet (no splitting)"),
+        ("download", "Download VCF files from Ensembl FTP"),
+        ("convert", "Convert VCF to Parquet"),
+        ("upload", "Upload to HuggingFace Hub"),
+    ]
+    
+    for name, description in jobs:
+        console.print(f"  [bold green]{name}[/bold green]")
+        console.print(f"      {description}")
+        console.print()
+
+
 @app.command()
 def version():
     """Show version information."""
@@ -1109,6 +1736,23 @@ def version():
         console.print(f"prepare-annotations version: [bold green]{v}[/bold green]")
     except importlib.metadata.PackageNotFoundError:
         console.print("prepare-annotations version: [yellow]development[/yellow]")
+
+
+def dagster_ensembl_ui():
+    """Standalone entrypoint to run Ensembl Dagster pipeline.
+    
+    By default runs the full pipeline (download → convert → split → upload).
+    Use 'dagster-ensembl ui' to start the web interface instead.
+    """
+    import sys
+    from prepare_annotations.cli import dagster_app
+    
+    # Default to "run" (executes full pipeline) if no subcommand provided
+    # Use 'dagster-ensembl ui' for the web interface
+    if len(sys.argv) == 1 or sys.argv[1].startswith("-"):
+        sys.argv.insert(1, "run")
+        
+    dagster_app()
 
 
 if __name__ == "__main__":

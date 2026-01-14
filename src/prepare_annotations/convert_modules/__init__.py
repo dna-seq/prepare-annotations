@@ -1,5 +1,10 @@
-from prepare_annotations.preparation.oakvar.convert_module import convert_longevitymap_data
-from prepare_annotations.preparation.oakvar.convert_longevitymap import (
+from prepare_annotations.convert_modules.common import convert_longevitymap_data
+from prepare_annotations.convert_modules.genotypes import (
+    genotype_has_placeholder,
+    resolve_genotype_placeholders_with_ensembl,
+    select_ensembl_minimal,
+)
+from prepare_annotations.convert_modules.longevitymap import (
     convert_longevitymap,
     convert_longevitymap_annotations,
     convert_longevitymap_studies,
@@ -7,31 +12,31 @@ from prepare_annotations.preparation.oakvar.convert_longevitymap import (
     normalize_genotype,
     derive_state_from_weight,
 )
-from prepare_annotations.preparation.oakvar.convert_lipidmetabolism import (
+from prepare_annotations.convert_modules.lipidmetabolism import (
     convert_lipidmetabolism,
     convert_lipidmetabolism_annotations,
     convert_lipidmetabolism_studies,
     convert_lipidmetabolism_weights,
 )
-from prepare_annotations.preparation.oakvar.convert_vo2max import (
+from prepare_annotations.convert_modules.vo2max import (
     convert_vo2max,
     convert_vo2max_annotations,
     convert_vo2max_studies,
     convert_vo2max_weights,
 )
-from prepare_annotations.preparation.oakvar.convert_superhuman import (
+from prepare_annotations.convert_modules.superhuman import (
     convert_superhuman,
     convert_superhuman_annotations,
     convert_superhuman_studies,
     convert_superhuman_weights,
 )
-from prepare_annotations.preparation.oakvar.convert_coronary import (
+from prepare_annotations.convert_modules.coronary import (
     convert_coronary,
     convert_coronary_annotations,
     convert_coronary_studies,
     convert_coronary_weights,
 )
-from prepare_annotations.preparation.oakvar.convert_drugs import (
+from prepare_annotations.convert_modules.drugs import (
     convert_drugs,
     convert_drugs_annotations,
     convert_drugs_studies,
@@ -39,6 +44,10 @@ from prepare_annotations.preparation.oakvar.convert_drugs import (
 )
 
 __all__ = [
+    # Genotypes / Ensembl join helpers
+    "genotype_has_placeholder",
+    "resolve_genotype_placeholders_with_ensembl",
+    "select_ensembl_minimal",
     # Longevitymap
     "convert_longevitymap_data",
     "convert_longevitymap",

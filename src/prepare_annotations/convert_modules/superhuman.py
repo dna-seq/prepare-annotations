@@ -20,11 +20,11 @@ import polars as pl
 from eliot import start_action
 
 
-def normalize_genotype(genotype: str | None) -> str | None:
-    """Normalize genotype to alphabetical order (e.g., 'GA' -> 'AG')."""
-    if genotype is None or len(genotype) != 2:
-        return genotype
-    return "".join(sorted(genotype))
+def normalize_genotype(genotype: str | None) -> list[str] | None:
+    """Normalize genotype to alphabetical list of alleles (e.g., 'GA' -> ['A', 'G'])."""
+    if genotype is None:
+        return None
+    return sorted(list(genotype))
 
 
 def convert_superhuman_annotations(db_path: Path) -> pl.LazyFrame:
@@ -123,14 +123,27 @@ def convert_superhuman_weights(
         
         # Normalize genotype and derive state
         normalized = weights_raw.with_columns(
-            # Normalize genotype alphabetically
+            # Normalize genotype alphabetically as a list
             pl.when(pl.col("genotype").str.len_chars() == 2)
             .then(
                 pl.when(pl.col("genotype").str.slice(0, 1) > pl.col("genotype").str.slice(1, 1))
-                .then(pl.col("genotype").str.slice(1, 1) + pl.col("genotype").str.slice(0, 1))
-                .otherwise(pl.col("genotype"))
+                .then(
+                    pl.concat_list([
+                        pl.col("genotype").str.slice(1, 1),
+                        pl.col("genotype").str.slice(0, 1)
+                    ])
+                )
+                .otherwise(
+                    pl.concat_list([
+                        pl.col("genotype").str.slice(0, 1),
+                        pl.col("genotype").str.slice(1, 1)
+                    ])
+                )
             )
-            .otherwise(pl.col("genotype"))
+            .otherwise(
+                # Fallback: split and handle non-empty parts if not 2 chars
+                pl.col("genotype").str.split("").list.slice(1, -1)
+            )
             .alias("genotype"),
             # No numeric weight for this module
             pl.lit(None).cast(pl.Float64).alias("weight"),

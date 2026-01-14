@@ -18,7 +18,7 @@ from platformdirs import user_cache_dir
 from tenacity import Retrying, retry_if_exception, stop_after_attempt, wait_exponential
 
 
-from prepare_annotations.resource import get_cache_dir
+from prepare_annotations.paths import get_cache_dir
 from prepare_annotations.io import AnnotatedLazyFrame, vcf_to_parquet
 
 RETRYABLE_STATUS = {408, 429, 500, 502, 503, 504}
@@ -885,7 +885,7 @@ def validate_downloads_and_parquet(
 
 
 if __name__ == "__main__":
-    from prepare_annotations.preparation.pipelines import PreparationPipelines
+    from prepare_annotations.pipelines import PreparationPipelines
     
     print("Running validation for Ensembl downloads...")
     # Note: validate_ensembl might be legacy or missing in the current Pipelines class

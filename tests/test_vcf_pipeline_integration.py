@@ -5,8 +5,8 @@ from typing import List
 import pytest
 from eliot import start_action
 
-from prepare_annotations.preparation.pipelines import prepare_vcf_source_flow
-from prepare_annotations.preparation.vcf_downloader import list_paths
+from prepare_annotations.pipelines import prepare_vcf_source_flow
+from prepare_annotations.vcf_downloader import list_paths
 
 
 @pytest.mark.integration

@@ -4,7 +4,7 @@ from pathlib import Path
 
 import polars as pl
 
-from prepare_annotations.preparation.pipelines import compute_rsid_coordinates_task
+from prepare_annotations.pipelines import compute_rsid_coordinates_task
 
 
 def _write_test_parquet(path: Path, chrom: str) -> None:

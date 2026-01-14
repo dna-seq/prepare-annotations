@@ -5,14 +5,24 @@ This repository is dedicated to the preparation of genomic annotation data (Ense
 ## Repository Layout (uv package)
 
 - `src/prepare_annotations/`: Core logic and CLI.
-  - `preparation/`: Source-specific preparation pipelines (Prefect-based).
-    - `pipelines.py`: Main flow and pipeline definitions.
-    - `oakvar/`: OakVar module management and conversion.
-      - `modules.py`: CLI for downloading and managing OakVar modules.
-      - `convert_longevitymap.py`: LongevityMap conversion to unified schema.
-      - `convert_module.py`: Generic module conversion utilities.
-  - `vortex/`: Vortex data conversion utilities.
   - `cli.py`: Main Typer CLI entrypoint.
+  - `pipelines.py`: Main Prefect flow and pipeline definitions.
+  - `vcf_downloader.py`: VCF download utilities.
+  - `genome_downloader.py`: Ensembl genome download utilities.
+  - `huggingface_uploader.py`: Upload utilities for HuggingFace Hub.
+  - `dataset_card_generator.py`: Dataset card templates.
+  - `vcf_parquet_splitter.py`: Variant splitting by type.
+  - `convert_modules/`: Module conversion to unified annotation schema.
+    - `modules.py`: CLI for downloading and managing modules.
+    - `longevitymap.py`: LongevityMap conversion.
+    - `coronary.py`: Coronary disease conversion.
+    - `drugs.py`: Pharmacogenomics conversion.
+    - `lipidmetabolism.py`: Lipid metabolism conversion.
+    - `superhuman.py`: Elite performance genetics conversion.
+    - `vo2max.py`: VO2max conversion.
+    - `common.py`: Shared conversion utilities.
+  - `vortex/`: Vortex data conversion utilities.
+  - `pipelines_dagster/`: Dagster-based pipeline alternative.
   - `io.py`: VCF/Parquet I/O utilities.
   - `runtime.py`: Execution environment and profiling.
   - `models.py`: Pydantic models for results.

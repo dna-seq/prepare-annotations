@@ -16,11 +16,11 @@ import polars as pl
 from eliot import start_action
 
 
-def normalize_genotype(genotype: str | None) -> str | None:
-    """Normalize genotype to alphabetical order (e.g., 'GA' -> 'AG')."""
-    if genotype is None or len(genotype) != 2:
-        return genotype
-    return "".join(sorted(genotype))
+def normalize_genotype(genotype: str | None) -> list[str] | None:
+    """Normalize genotype to alphabetical list of alleles (e.g., 'GA' -> ['A', 'G'])."""
+    if genotype is None:
+        return None
+    return sorted(list(genotype))
 
 
 def derive_state_from_weight(weight: float | None) -> str:
@@ -230,14 +230,27 @@ def convert_longevitymap_weights(
         
         # Normalize genotype and derive state
         normalized = combined.with_columns(
-            # Normalize genotype alphabetically
+            # Normalize genotype alphabetically as a list
             pl.when(pl.col("genotype_raw").str.len_chars() == 2)
             .then(
                 pl.when(pl.col("genotype_raw").str.slice(0, 1) > pl.col("genotype_raw").str.slice(1, 1))
-                .then(pl.col("genotype_raw").str.slice(1, 1) + pl.col("genotype_raw").str.slice(0, 1))
-                .otherwise(pl.col("genotype_raw"))
+                .then(
+                    pl.concat_list([
+                        pl.col("genotype_raw").str.slice(1, 1),
+                        pl.col("genotype_raw").str.slice(0, 1)
+                    ])
+                )
+                .otherwise(
+                    pl.concat_list([
+                        pl.col("genotype_raw").str.slice(0, 1),
+                        pl.col("genotype_raw").str.slice(1, 1)
+                    ])
+                )
             )
-            .otherwise(pl.col("genotype_raw"))
+            .otherwise(
+                # Fallback: split and handle non-empty parts if not 2 chars
+                pl.col("genotype_raw").str.split("").list.slice(1, -1)
+            )
             .alias("genotype"),
             # Derive state from weight sign
             pl.when(pl.col("weight") > 0)

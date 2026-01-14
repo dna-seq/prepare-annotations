@@ -11,7 +11,7 @@ from eliot import start_action
 from huggingface_hub import HfApi, hf_hub_download, list_repo_files, CommitOperationAdd
 from huggingface_hub.utils import RepositoryNotFoundError, HfHubHTTPError
 from prepare_annotations.models import SingleUploadResult, BatchUploadResult
-from prepare_annotations.preparation.dataset_card_generator import (
+from prepare_annotations.dataset_card_generator import (
     generate_ensembl_card, 
     generate_clinvar_card,
     save_dataset_card
@@ -314,7 +314,7 @@ def upload_files_batch(
                     remote_size=remote_size,
                 ))
         
-        # Add dataset card if provided
+        # Add dataset card if provided (always update it, even if no data files changed)
         tmp_readme_path = None
         if dataset_card_content is not None:
             import tempfile
@@ -335,7 +335,7 @@ def upload_files_batch(
                 card_size=len(dataset_card_content)
             )
         
-        # Upload all files in a single commit
+        # Upload all files in a single commit (includes dataset card even if no data files changed)
         if operations:
             num_uploading = len(operations)
             total_size_mb = sum(

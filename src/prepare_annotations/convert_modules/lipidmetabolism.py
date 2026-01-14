@@ -1,5 +1,5 @@
 """
-Convert Coronary Disease SQLite data to unified annotation schema.
+Convert Lipid Metabolism SQLite data to unified annotation schema.
 
 Outputs three Parquet files:
 - annotations.parquet: Variant-level facts
@@ -16,111 +16,142 @@ import polars as pl
 from eliot import start_action
 
 
-def normalize_genotype(genotype: str | None) -> str | None:
-    """Normalize genotype to alphabetical order (e.g., 'GA' -> 'AG')."""
-    if genotype is None or len(genotype) != 2:
-        return genotype
-    return "".join(sorted(genotype))
+def normalize_genotype(genotype: str | None) -> list[str] | None:
+    """Normalize genotype to alphabetical list of alleles (e.g., 'GA' -> ['A', 'G'])."""
+    if genotype is None:
+        return None
+    return sorted(list(genotype))
 
 
-def convert_coronary_annotations(db_path: Path) -> pl.LazyFrame:
+def derive_state_from_weight(weight: float | None) -> str:
+    """Derive semantic state from weight value."""
+    if weight is None:
+        return "neutral"
+    if weight > 0:
+        return "protective"
+    elif weight < 0:
+        return "risk"
+    return "neutral"
+
+
+def convert_lipidmetabolism_annotations(db_path: Path) -> pl.LazyFrame:
     """
-    Convert Coronary Disease to annotations.parquet format.
+    Convert Lipid Metabolism to annotations.parquet format.
     
     Schema: rsid, module, gene, phenotype, category
     """
-    with start_action(action_type="convert_coronary_annotations", db_path=str(db_path)):
+    with start_action(action_type="convert_lipidmetabolism_annotations", db_path=str(db_path)):
         conn = sqlite3.connect(db_path)
         
+        # Get unique rsid -> gene mappings from rsids table
         query = """
         SELECT DISTINCT
-            rsID as rsid,
-            Gene as gene
-        FROM coronary_disease
-        WHERE rsID IS NOT NULL
+            rsid,
+            gene
+        FROM rsids
+        WHERE rsid IS NOT NULL
         """
         df = pl.read_database(query, connection=conn).lazy()
         conn.close()
         
         return df.with_columns(
-            pl.lit("coronary").alias("module"),
-            pl.lit("coronary_disease").alias("phenotype"),
-            pl.lit("cardiovascular").alias("category"),
+            pl.lit("lipidmetabolism").alias("module"),
+            pl.lit("lipid_metabolism").alias("phenotype"),
+            pl.lit("lipids").alias("category"),  # Default category for this module
         ).select("rsid", "module", "gene", "phenotype", "category")
 
 
-def convert_coronary_studies(db_path: Path) -> pl.LazyFrame:
+def convert_lipidmetabolism_studies(db_path: Path) -> pl.LazyFrame:
     """
-    Convert Coronary Disease to studies.parquet format.
+    Convert Lipid Metabolism to studies.parquet format.
     
     Schema: rsid, module, pmid, population, p_value, conclusion, study_design
+    
+    Uses the rsids table which has pmids, population, p_value, and rsid_conclusion.
     """
-    with start_action(action_type="convert_coronary_studies", db_path=str(db_path)):
+    with start_action(action_type="convert_lipidmetabolism_studies", db_path=str(db_path)):
         conn = sqlite3.connect(db_path)
         
+        # The rsids table contains study information
         query = """
         SELECT DISTINCT
-            rsID as rsid,
-            PMID as pmid,
-            Population as population,
-            P_value as p_value,
-            Conclusion as conclusion,
-            GWAS_study_design as study_design
-        FROM coronary_disease
-        WHERE rsID IS NOT NULL
+            rsid,
+            pmids as pmid,
+            population,
+            p_value,
+            rsid_conclusion as conclusion
+        FROM rsids
+        WHERE rsid IS NOT NULL
         """
         df = pl.read_database(query, connection=conn).lazy()
         conn.close()
         
         return df.with_columns(
-            pl.lit("coronary").alias("module"),
+            pl.lit("lipidmetabolism").alias("module"),
+            pl.lit(None).cast(pl.Utf8).alias("study_design"),
         ).select("rsid", "module", "pmid", "population", "p_value", "conclusion", "study_design")
 
 
-def convert_coronary_weights(
+def convert_lipidmetabolism_weights(
     db_path: Path,
     curator: str = "just-dna-seq",
-    method: str = "gwas_literature",
+    method: str = "literature_review",
 ) -> pl.LazyFrame:
     """
-    Convert Coronary Disease to weights.parquet format.
+    Convert Lipid Metabolism to weights.parquet format.
     
     Schema: rsid, genotype, module, weight, state, priority, conclusion, curator, method
+    
+    The weight table already has genotype column, so we just need to normalize it.
     """
     with start_action(
-        action_type="convert_coronary_weights",
+        action_type="convert_lipidmetabolism_weights",
         db_path=str(db_path),
     ):
         conn = sqlite3.connect(db_path)
         
+        # Load weights from weight table
         query = """
         SELECT 
-            rsID as rsid,
-            Genotype as genotype,
-            Weight as weight,
+            rsid,
+            genotype,
+            weight,
             state,
-            Conclusion as conclusion
-        FROM coronary_disease
-        WHERE rsID IS NOT NULL AND Genotype IS NOT NULL
+            genotype_specific_conclusion as conclusion
+        FROM weight
+        WHERE rsid IS NOT NULL
         """
         weights_raw = pl.read_database(query, connection=conn).lazy()
         conn.close()
         
         # Normalize genotype and convert weight to float
         normalized = weights_raw.with_columns(
-            # Normalize genotype alphabetically
+            # Normalize genotype alphabetically as a list
             pl.when(pl.col("genotype").str.len_chars() == 2)
             .then(
                 pl.when(pl.col("genotype").str.slice(0, 1) > pl.col("genotype").str.slice(1, 1))
-                .then(pl.col("genotype").str.slice(1, 1) + pl.col("genotype").str.slice(0, 1))
-                .otherwise(pl.col("genotype"))
+                .then(
+                    pl.concat_list([
+                        pl.col("genotype").str.slice(1, 1),
+                        pl.col("genotype").str.slice(0, 1)
+                    ])
+                )
+                .otherwise(
+                    pl.concat_list([
+                        pl.col("genotype").str.slice(0, 1),
+                        pl.col("genotype").str.slice(1, 1)
+                    ])
+                )
             )
-            .otherwise(pl.col("genotype"))
+            .otherwise(
+                # Fallback: split and handle non-empty parts if not 2 chars
+                pl.col("genotype").str.split("").list.slice(1, -1)
+            )
             .alias("genotype"),
             # Convert weight to float (stored as TEXT in SQLite)
             pl.col("weight").cast(pl.Float64, strict=False).alias("weight"),
             # Add module, curator, method
-            pl.lit("coronary").alias("module"),
+            pl.lit("lipidmetabolism").alias("module"),
             pl.lit(curator).alias("curator"),
             pl.lit(method).alias("method"),
             pl.lit(None).cast(pl.Utf8).alias("priority"),
@@ -166,14 +197,14 @@ def convert_coronary_weights(
         return result
 
 
-def convert_coronary(
+def convert_lipidmetabolism(
     db_path: Path,
     output_dir: Path,
     curator: str = "just-dna-seq",
-    method: str = "gwas_literature",
+    method: str = "literature_review",
 ) -> dict[str, Path]:
     """
-    Convert Coronary Disease SQLite to unified annotation schema.
+    Convert Lipid Metabolism SQLite to unified annotation schema.
     
     Outputs three Parquet files to output_dir:
     - annotations.parquet
@@ -181,7 +212,7 @@ def convert_coronary(
     - weights.parquet
     
     Args:
-        db_path: Path to Coronary Disease SQLite database
+        db_path: Path to Lipid Metabolism SQLite database
         output_dir: Directory for output Parquet files
         curator: Curator name for weights
         method: Curation method for weights
@@ -190,7 +221,7 @@ def convert_coronary(
         Dictionary mapping table names to output paths
     """
     with start_action(
-        action_type="convert_coronary",
+        action_type="convert_lipidmetabolism",
         db_path=str(db_path),
         output_dir=str(output_dir),
     ):
@@ -198,19 +229,19 @@ def convert_coronary(
         outputs = {}
         
         # Convert annotations
-        annotations = convert_coronary_annotations(db_path)
+        annotations = convert_lipidmetabolism_annotations(db_path)
         annotations_path = output_dir / "annotations.parquet"
         annotations.collect().write_parquet(annotations_path)
         outputs["annotations"] = annotations_path
         
         # Convert studies
-        studies = convert_coronary_studies(db_path)
+        studies = convert_lipidmetabolism_studies(db_path)
         studies_path = output_dir / "studies.parquet"
         studies.collect().write_parquet(studies_path)
         outputs["studies"] = studies_path
         
         # Convert weights
-        weights = convert_coronary_weights(
+        weights = convert_lipidmetabolism_weights(
             db_path,
             curator=curator,
             method=method,

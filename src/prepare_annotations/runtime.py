@@ -113,7 +113,13 @@ def load_env(override: bool = False) -> Optional[str]:
 
 @contextmanager
 def resource_tracker(name: str = "resource_usage"):
-    """Context manager to track execution time, CPU and peak memory usage."""
+    """Context manager to track execution time, CPU and peak memory usage.
+    
+    Automatically logs to:
+    - Dagster: logs resource metrics as asset metadata
+    - Prefect: logs resource metrics and creates markdown artifacts
+    - Eliot: logs structured resource report
+    """
     process = psutil.Process(os.getpid())
     start_time = time.perf_counter()
     start_mem = process.memory_info().rss
@@ -150,25 +156,68 @@ def resource_tracker(name: str = "resource_usage"):
     # Store report in the data dict so calling code can access it
     data["report"] = report
 
-    # Log to Prefect if available
+    # Log to Dagster if available (check this first as it's more specific)
+    dagster_logged = False
     try:
-        from prefect import get_run_logger
-        from prefect.artifacts import create_markdown_artifact
+        from dagster import get_dagster_logger, MetadataValue
+        # This will fail if not in a dagster context
+        logger = get_dagster_logger()
+        logger.info(
+            f"📊 Resource Report [{name}]: Duration: {report.duration:.2f}s, "
+            f"CPU: {report.cpu_usage_percent:.1f}%, Peak RAM: {report.peak_memory_mb:.2f}MB"
+        )
+        dagster_logged = True
+        
+        # Try to add metadata to the current op run
         try:
-            logger = get_run_logger()
-            logger.info(
-                f"Resource Report [{name}]: Duration: {report.duration:.2f}s, "
-                f"CPU: {report.cpu_usage_percent:.1f}%, Peak RAM: {report.peak_memory_mb:.2f}MB"
-            )
+            from dagster import get_dagster_context
+            context = get_dagster_context()
             
-            # Clean name for artifact key (must be lowercase, alphanumeric and hyphens)
-            clean_key = re.sub(r'[^a-z0-9]+', '-', name.lower()).strip('-')
+            # Clean name for metadata key
+            clean_key = re.sub(r'[^a-z0-9]+', '_', name.lower()).strip('_')
             if not clean_key:
-                clean_key = "resource-usage"
+                clean_key = "resource_usage"
             
-            create_markdown_artifact(
-                key=f"{clean_key}-resources",
-                markdown=f"""# Resource Report: {name}
+            # Log metadata directly to the current op
+            context.log.info(
+                "resource_metrics",
+                metadata={
+                    f"{clean_key}_duration_sec": MetadataValue.float(round(report.duration, 2)),
+                    f"{clean_key}_cpu_percent": MetadataValue.float(round(report.cpu_usage_percent, 1)),
+                    f"{clean_key}_peak_memory_mb": MetadataValue.float(round(report.peak_memory_mb, 2)),
+                    f"{clean_key}_memory_delta_mb": MetadataValue.float(round(report.memory_delta_mb, 2)),
+                }
+            )
+        except Exception:
+            # Context not available or metadata logging failed
+            pass
+            
+    except ImportError:
+        pass
+    except Exception:
+        # Not in a Dagster context
+        pass
+
+    # Log to Prefect if available and not already logged to Dagster
+    if not dagster_logged:
+        try:
+            from prefect import get_run_logger
+            from prefect.artifacts import create_markdown_artifact
+            try:
+                logger = get_run_logger()
+                logger.info(
+                    f"Resource Report [{name}]: Duration: {report.duration:.2f}s, "
+                    f"CPU: {report.cpu_usage_percent:.1f}%, Peak RAM: {report.peak_memory_mb:.2f}MB"
+                )
+                
+                # Clean name for artifact key (must be lowercase, alphanumeric and hyphens)
+                clean_key = re.sub(r'[^a-z0-9]+', '-', name.lower()).strip('-')
+                if not clean_key:
+                    clean_key = "resource-usage"
+                
+                create_markdown_artifact(
+                    key=f"{clean_key}-resources",
+                    markdown=f"""# Resource Report: {name}
 | Metric | Value |
 | :--- | :--- |
 | **Duration** | {report.duration:.2f}s |
@@ -176,13 +225,13 @@ def resource_tracker(name: str = "resource_usage"):
 | **Peak Memory** | {report.peak_memory_mb:.2f} MB |
 | **Memory Delta** | {report.memory_delta_mb:+.2f} MB |
 """,
-                description=f"Resource usage metrics for {name}"
-            )
-        except Exception:
-            # Not in a prefect context or logger not available
+                    description=f"Resource usage metrics for {name}"
+                )
+            except Exception:
+                # Not in a prefect context or logger not available
+                pass
+        except ImportError:
             pass
-    except ImportError:
-        pass
 
 
 def resolve_worker_counts(

@@ -15,10 +15,16 @@ from platformdirs import user_cache_dir
 from pycomfort.logging import to_nice_stdout, to_nice_file
 
 from prepare_annotations.io import is_parquet, _default_parquet_path
-from prepare_annotations.resource import get_cache_dir
+from prepare_annotations.paths import (
+    get_cache_dir,
+    get_default_cache_dir,
+    get_default_input_dir,
+    get_default_interim_dir,
+    get_default_output_dir,
+)
 from prepare_annotations.runtime import prefect_flow_run
 from prepare_annotations.models import PreparationResult, SplitResult, BatchUploadResult, RSIDCoordinateResult
-from prepare_annotations.preparation.vcf_downloader import (
+from prepare_annotations.vcf_downloader import (
     list_paths,
     download_path,
     convert_to_parquet,
@@ -26,11 +32,11 @@ from prepare_annotations.preparation.vcf_downloader import (
     download_checksums,
     ChecksumInfo,
 )
-from prepare_annotations.preparation.huggingface_uploader import (
+from prepare_annotations.huggingface_uploader import (
     collect_parquet_files,
     upload_parquet_to_hf,
 )
-from prepare_annotations.preparation.dataset_card_generator import (
+from prepare_annotations.dataset_card_generator import (
     generate_clinvar_card,
     generate_ensembl_card,
     generate_dbsnp_card,
@@ -51,7 +57,7 @@ def split_parquets_task(
     write_to: Optional[Path] = None,
 ) -> SplitResult:
     """Split parquet files by variant type (TSA)."""
-    from prepare_annotations.preparation.vcf_parquet_splitter import split_variants_by_tsa
+    from prepare_annotations.vcf_parquet_splitter import split_variants_by_tsa
     
     results = {}
     for p in parquet_paths:
@@ -383,44 +389,6 @@ def ensembl_rsid_coords_flow(
             force=force,
             compression_level=compression_level,
         )
-
-
-def get_default_cache_dir(name: str) -> Path:
-    """Get the default cache directory for a data source.
-    
-    This is the main directory under the cache folder for a given source.
-    Files (VCF, parquet, splitted_variants) are stored directly here.
-    """
-    root_dir = get_cache_dir() / name
-    root_dir.mkdir(parents=True, exist_ok=True)
-    return root_dir
-
-
-def get_default_input_dir(name: str) -> Path:
-    """Get the default destination directory for downloads.
-    
-    Note: For backwards compatibility. New code should use get_default_cache_dir.
-    Downloads are stored directly in the cache folder now.
-    """
-    return get_default_cache_dir(name)
-
-
-def get_default_interim_dir(name: str) -> Path:
-    """Get the default directory for intermediate files.
-    
-    Note: For backwards compatibility. Intermediate parquet files are stored
-    directly in the cache folder now.
-    """
-    return get_default_cache_dir(name)
-
-
-def get_default_output_dir(name: str) -> Path:
-    """Get the default directory for final output files.
-    
-    Note: For backwards compatibility. Output files (like splitted_variants)
-    are stored directly in the cache folder now.
-    """
-    return get_default_cache_dir(name)
 
 
 @flow(name="Prepare VCF Source")

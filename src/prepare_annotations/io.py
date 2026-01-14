@@ -155,7 +155,7 @@ def read_vcf_file(
     thread_num: Optional[int] = None,
     save_parquet: SaveParquet = "auto",
     save_vortex: SaveVortex = None,
-    engine: str = "auto",
+    engine: str = "streaming",
     compression: str = "zstd",
     compression_level: Optional[int] = 14,
     alts_list: bool = True
@@ -169,25 +169,28 @@ def read_vcf_file(
         thread_num: The number of threads to use for reading the VCF file. Used **only** for parallel decompression of BGZF blocks. Works only for **local** files.
         save_parquet: Controls saving to parquet.
             - None: do not save
-            - "auto": save next to the input, replacing .vcf/.vcf.gz with .parquet
+            - "auto" (default): save next to the input VCF, replacing .vcf/.vcf.gz with .parquet. 
+              Example: data.vcf.gz -> data.parquet
             - Path: save to the provided location
         save_vortex: Controls saving to Vortex format.
             - None: do not save
             - "auto": if parquet saving is enabled, saves next to the parquet with .vortex extension;
               otherwise saves next to the input, replacing .vcf/.vcf.gz with .vortex
             - Path: save to the provided location
-        engine: Parquet engine to use for sinking ("auto" or "arrow")
+        engine: Parquet engine to use for sinking (defaults to "streaming")
         compression: Compression type for parquet (e.g., "zstd", "snappy")
         compression_level: Compression level for parquet (e.g., 14 for zstd)
-        Polars LazyFrame or DataFrame containing the VCF data.
-        When saving to parquet, returns a LazyFrame that reads from the parquet file
-        (preserving lazy evaluation while ensuring temp files are cleaned up).
-        When save_parquet=None, returns the original LazyFrame from polars-bio.
+        alts_list: Whether to add a list of alternative alleles as 'alts' column
+    
+    Returns:
+        Polars LazyFrame containing the VCF data.
+        If save_parquet is not None, returns a LazyFrame that scans the newly created parquet file.
+        If save_parquet is None, returns the original LazyFrame from polars-bio.
 
     Note:
         VCF reader uses **1-based** coordinate system for the `start` and `end` columns.
-        When saving to parquet, the function creates the parquet file next to the original VCF
-        (for "auto") or at the provided path.
+        When saving to parquet with "auto", the function creates the parquet file in the same directory
+        as the original VCF, replacing its extension with .parquet.
     """
     with start_action(
         action_type="read_vcf_file",
@@ -200,13 +203,6 @@ def read_vcf_file(
         if is_parquet(file_path):
             action.log(message_type="info", step="detected_parquet", path=str(file_path))
             return pl.scan_parquet(str(file_path))
-
-        # Prepare kwargs for pb.scan_vcf using locals(), excluding non-scan_vcf args
-        vcf_kwargs = {
-            k: v
-            for k, v in locals().items()
-            if k not in ("file_path", "save_parquet", "save_vortex", "action", "engine", "compression", "compression_level", "alts_list")
-        }
 
         # Resolve parquet path decision early
         if isinstance(save_parquet, Path):
@@ -232,9 +228,13 @@ def read_vcf_file(
         )
 
         # Let polars-bio handle compression autodetection and any VCF format issues
-        vcf_kwargs["info_fields"] = get_info_fields(str(file_path)) if info_fields is None else info_fields
+        actual_info_fields = get_info_fields(str(file_path)) if info_fields is None else info_fields
 
-        result = pb.scan_vcf(str(file_path), **vcf_kwargs)
+        result = pb.scan_vcf(
+            str(file_path),
+            info_fields=actual_info_fields,
+            thread_num=thread_num if thread_num is not None else 1
+        )
         if alts_list:
             # 1. Define the transformation
             result = result.with_columns(alts=pl.col("alt").str.split("|"))
@@ -400,6 +400,7 @@ def vcf_to_parquet(
     vcf_path: Union[str, Path],
     parquet_path: Optional[Union[str, Path]] = None,
     info_fields: Union[list[str], None] = None,
+    thread_num: Optional[int] = None,
     overwrite: bool = False,
     compression: str = "zstd",
     compression_level: Optional[int] = 14,
@@ -414,8 +415,12 @@ def vcf_to_parquet(
     
     Args:
         vcf_path: Path to the input VCF file (can be .vcf or .vcf.gz)
-        parquet_path: Path where to save the Parquet file. If None, saves next to VCF with .parquet extension
+        parquet_path: Path where to save the Parquet file. 
+            If None (default), saves next to VCF with .parquet extension ("auto" behavior).
+            Example: variants.vcf.gz -> variants.parquet
         info_fields: The fields to read from the INFO column. If None, reads all available fields
+        thread_num: The number of threads to use for reading the VCF file. 
+            Used only for parallel decompression of BGZF blocks. Works only for local files.
         overwrite: Whether to overwrite existing Parquet file (default False)
         compression: Compression type for parquet (e.g., "zstd", "snappy")
         compression_level: Compression level for parquet (e.g., 14 for zstd)
@@ -489,6 +494,7 @@ def vcf_to_parquet(
         lazy_frame = read_vcf_file(
             file_path=vcf_path,
             info_fields=info_fields,
+            thread_num=thread_num,
             save_parquet=output_path,
             compression=compression,
             compression_level=compression_level,

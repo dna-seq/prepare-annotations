@@ -99,7 +99,7 @@ def convert_drugs_weights(
         
         result = df.select(
             pl.col("Variant/Haplotypes").alias("rsid"),
-            pl.lit("??").alias("genotype"),  # Genotype not in dataset
+            pl.concat_list([pl.lit("?"), pl.lit("?")]).alias("genotype"),  # Genotype not in dataset
             pl.lit("drugs").alias("module"),
             pl.lit(None).cast(pl.Float64).alias("weight"),
             # Derive state from Significance

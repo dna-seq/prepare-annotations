@@ -103,7 +103,7 @@ The annotation tables are designed to join with VCF/Parquet variant data:
 | Column | Type | Required | Description |
 |--------|------|----------|-------------|
 | `rsid` | String | ✓ | Variant identifier |
-| `genotype` | String | ✓ | Genotype this weight applies to (NORMALIZED alphabetically) |
+| `genotype` | List[String] | ✓ | Genotype this weight applies to (NORMALIZED alphabetically) |
 | `module` | String | ✓ | Source module name |
 | `weight` | Float64 | | Numeric weight/score (nullable) |
 | `state` | String | | Effect direction: risk/protective/neutral/significant |
@@ -144,7 +144,7 @@ weights = pl.scan_parquet("weights.parquet")
 
 # Add computed zygosity
 weights_with_zygosity = weights.with_columns(
-    pl.when(pl.col("genotype").str.slice(0, 1) == pl.col("genotype").str.slice(1, 1))
+    pl.when(pl.col("genotype").list.get(0) == pl.col("genotype").list.get(1))
     .then(pl.lit("hom"))
     .otherwise(pl.lit("het"))
     .alias("zygosity")
@@ -159,28 +159,44 @@ Genotypes are stored in **alphabetical order** for consistent matching:
 
 | Original | Normalized | Zygosity |
 |----------|------------|----------|
-| `"GA"` | `"AG"` | het |
-| `"TC"` | `"CT"` | het |
-| `"AA"` | `"AA"` | hom |
-| `"GG"` | `"GG"` | hom |
+| `"GA"` | `["A", "G"]` | het |
+| `"TC"` | `["C", "T"]` | het |
+| `"AA"` | `["A", "A"]` | hom |
+| `"GG"` | `["G", "G"]` | hom |
 
 ### Normalization Function
 
 ```python
-def normalize_genotype(genotype: str) -> str:
-    """Normalize genotype to alphabetical order."""
-    if genotype is None or len(genotype) != 2:
-        return genotype
-    return "".join(sorted(genotype))
+def normalize_genotype(genotype: str) -> list[str]:
+    """Normalize genotype to alphabetical list of alleles."""
+    if genotype is None:
+        return None
+    return sorted(list(genotype))
 ```
 
 ### Polars Normalization
 
 ```python
 df = df.with_columns(
-    pl.when(pl.col("genotype").str.slice(0, 1) > pl.col("genotype").str.slice(1, 1))
-    .then(pl.col("genotype").str.slice(1, 1) + pl.col("genotype").str.slice(0, 1))
-    .otherwise(pl.col("genotype"))
+    pl.when(pl.col("genotype_raw").str.len_chars() == 2)
+    .then(
+        pl.when(pl.col("genotype_raw").str.slice(0, 1) > pl.col("genotype_raw").str.slice(1, 1))
+        .then(
+            pl.concat_list([
+                pl.col("genotype_raw").str.slice(1, 1),
+                pl.col("genotype_raw").str.slice(0, 1)
+            ])
+        )
+        .otherwise(
+            pl.concat_list([
+                pl.col("genotype_raw").str.slice(0, 1),
+                pl.col("genotype_raw").str.slice(1, 1)
+            ])
+        )
+    )
+    .otherwise(
+        pl.col("genotype_raw").str.split("").list.slice(1, -1)
+    )
     .alias("genotype")
 )
 ```
