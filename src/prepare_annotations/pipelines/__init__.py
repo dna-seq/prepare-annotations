@@ -1,6 +1,12 @@
 """
 Dagster-based pipelines for genomic data preparation.
 
+NOTE: This module is maintained for backward compatibility.
+For new code, use:
+- prepare_annotations.definitions (Dagster definitions)
+- prepare_annotations.pipelines (standalone API)
+- prepare_annotations.assets (Dagster assets)
+
 This module provides Dagster pipelines with proper asset lineage tracking
 for all intermediate and final files, including HuggingFace downloads and uploads.
 
@@ -35,24 +41,22 @@ Module Conversion Assets:
 
 Usage:
     # Launch the Dagster webserver
-    uv run dg dev
+    uv run dagster dev -m prepare_annotations
 
     # Materialize VCF URL discovery (registers partitions)
-    uv run dg asset materialize --select ensembl_vcf_urls
+    uv run dagster asset materialize --select ensembl_vcf_urls
 
     # Materialize all VCF file downloads (all partitions)
-    uv run dg asset materialize --select ensembl_vcf_file
+    uv run dagster asset materialize --select ensembl_vcf_file
 
     # Materialize specific file partition
-    uv run dg asset materialize --select ensembl_vcf_file --partition homo_sapiens.vcf.gz
+    uv run dagster asset materialize --select ensembl_vcf_file --partition homo_sapiens.vcf.gz
 
     # Run a job
-    uv run dg launch --job prepare
+    uv run dagster job launch --job prepare
     
     # Run longevitymap conversion
-    uv run dg launch --job longevitymap
+    uv run dagster job launch --job longevitymap
 """
 from prepare_annotations.pipelines.definitions import defs
 from prepare_annotations.pipelines.logic import PreparationPipelines
-
-__all__ = ["defs", "PreparationPipelines"]

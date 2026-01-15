@@ -1,39 +1,13 @@
-import os
+"""
+Configuration helpers.
 
-
-def get_default_workers() -> int:
-    """
-    Return default workers from PREPARE_ANNOTATIONS_WORKERS env var or CPU count.
-
-    Downloaders that manage their own workers should not use this.
-    """
-    return int(os.getenv("PREPARE_ANNOTATIONS_WORKERS", os.cpu_count() or 1))
-
-
-def get_parquet_workers() -> int:
-    """
-    Return parquet workers from PREPARE_ANNOTATIONS_PARQUET_WORKERS env var or default.
-
-    This is used for memory-intensive parquet operations (conversion, splitting, etc.) to avoid memory overload.
-    If not specified, defaults to min(4, CPU count).
-    """
-    import psutil
-    cpu_count = psutil.cpu_count(logical=True) or 4
-    return int(os.getenv("PREPARE_ANNOTATIONS_PARQUET_WORKERS", min(cpu_count, 4)))
-
-
-def get_download_workers() -> int:
-    """
-    Return download workers from PREPARE_ANNOTATIONS_DOWNLOAD_WORKERS env var or CPU count.
-
-    Used for parallel I/O-bound download operations.
-    """
-    return int(os.getenv("PREPARE_ANNOTATIONS_DOWNLOAD_WORKERS", os.cpu_count() or 1))
-
-
-def get_profile_enabled() -> bool:
-    """Return whether profiling is enabled (PREPARE_ANNOTATIONS_PROFILE), defaulting to True."""
-    value = os.getenv("PREPARE_ANNOTATIONS_PROFILE", "1").strip().lower()
-    return value not in {"0", "false", "no", "off", "n"}
-
-
+NOTE: This module is kept for backward compatibility.
+New code should use: prepare_annotations.core.config
+"""
+# Re-export from core for backward compatibility
+from prepare_annotations.core.config import (
+    get_default_workers,
+    get_parquet_workers,
+    get_download_workers,
+    get_profile_enabled,
+)

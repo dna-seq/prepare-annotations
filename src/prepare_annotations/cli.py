@@ -16,8 +16,8 @@ import typer
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from eliot import start_action
-from prepare_annotations.huggingface_uploader import collect_parquet_files
-from prepare_annotations.dataset_card_generator import (
+from prepare_annotations.huggingface.uploader import collect_parquet_files
+from prepare_annotations.huggingface.dataset_cards import (
     generate_ensembl_card, 
     generate_clinvar_card,
     generate_dbsnp_card,
@@ -45,9 +45,7 @@ if "POLARS_ENGINE_AFFINITY" not in os.environ:
 if "POLARS_LOW_MEMORY" not in os.environ:
     os.environ["POLARS_LOW_MEMORY"] = "1"
 
-from prepare_annotations.pipelines import (
-    PreparationPipelines,
-)
+from prepare_annotations.pipelines import PreparationPipelines
 from pycomfort.logging import to_nice_file, to_nice_stdout
 
 # Create the main CLI app
@@ -56,6 +54,14 @@ app = typer.Typer(
     help="Modern Genomic Data Pipeline Tool (using Pipelines class)",
     rich_markup_mode="rich",
     no_args_is_help=True
+)
+
+# Minimal Dagster-only CLI (used by `uv run prepare`)
+dagster_app = typer.Typer(
+    name="prepare",
+    help="Dagster pipelines and UI for prepare-annotations",
+    rich_markup_mode="rich",
+    no_args_is_help=True,
 )
 
 console = Console()
@@ -191,6 +197,7 @@ def _dagster_run_ensembl(
     2. Runs backfill for all partitions of ensembl_vcf_file and ensembl_parquet_file
     3. Materializes the collector and upload assets
     """
+    import json
     import os
     from dagster import DagsterInstance, materialize
     
@@ -210,8 +217,7 @@ def _dagster_run_ensembl(
     console.print("   Monitor progress at: http://127.0.0.1:3000\n")
 
     # Import assets and definitions
-    from prepare_annotations.pipelines.ensembl_assets import (
-        ensembl_ftp_source,
+    from prepare_annotations.assets import (
         ensembl_vcf_urls,
         ensembl_vcf_file,
         ensembl_parquet_file,
@@ -219,7 +225,7 @@ def _dagster_run_ensembl(
         ensembl_hf_upload,
         ENSEMBL_VCF_PARTITIONS,
     )
-    from prepare_annotations.pipelines.io_managers import (
+    from prepare_annotations.dagster_io_managers import (
         ensembl_cache_io_manager,
         huggingface_upload_io_manager,
     )
@@ -232,10 +238,21 @@ def _dagster_run_ensembl(
     }
     
     def _run_config_for_assets(asset_names: list[str]) -> dict:
-        config: dict[str, dict] = {"ops": {}}
-        for asset_name in asset_names:
-            config["ops"][asset_name] = {"config": {"species": species}}
-        return config
+        ops_config: dict[str, dict] = {}
+        if "ensembl_vcf_urls" in asset_names:
+            ops_config["ensembl_vcf_urls"] = {"config": {"species": species}}
+        if "ensembl_vcf_file" in asset_names:
+            ops_config["ensembl_vcf_file"] = {"config": {"species": species}}
+        if "ensembl_parquet_file" in asset_names:
+            # Parquet conversion does not accept species config.
+            ops_config["ensembl_parquet_file"] = {"config": {}}
+        return {"ops": ops_config} if ops_config else {}
+
+    def _get_max_download_workers() -> int:
+        env_value = os.getenv("PREPARE_ANNOTATIONS_DOWNLOAD_WORKERS")
+        if env_value:
+            return max(1, int(env_value))
+        return 4
 
     all_assets = [
         ensembl_vcf_urls,
@@ -264,8 +281,92 @@ def _dagster_run_ensembl(
     console.print(f"   Found [bold]{len(partition_keys)}[/bold] partitions")
     
     if job_name in ("download", "prepare", "full"):
-        # Step 2: Download VCF files (partitioned)
-        console.print(f"\n[bold]Step 2:[/bold] Downloading {len(partition_keys)} VCF files...")
+        # Step 2: Download VCF files (parallel downloader + sequential lineage materialization)
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        from prepare_annotations.dagster_configs import EnsemblDownloadConfig
+        from prepare_annotations.core.paths import (
+            get_default_ensembl_cache_dir,
+            get_ensembl_species_url,
+        )
+        from prepare_annotations.downloaders.vcf import (
+            download_path,
+            download_checksums,
+            ChecksumInfo,
+        )
+
+        max_workers = _get_max_download_workers()
+        console.print(
+            f"\n[bold]Step 2:[/bold] Downloading {len(partition_keys)} VCF files "
+            f"with {max_workers} parallel workers..."
+        )
+
+        download_config = EnsemblDownloadConfig(species=species)
+        cache_dir = get_default_ensembl_cache_dir(species)
+        urls_file = cache_dir / "vcf_urls.json"
+        urls = json.loads(urls_file.read_text())
+        vcf_dir = cache_dir / "vcf"
+        vcf_dir.mkdir(parents=True, exist_ok=True)
+
+        existing_files = {p.name for p in vcf_dir.glob("*.vcf.gz")}
+        missing_urls = [u for u in urls if u.rsplit("/", 1)[-1] not in existing_files]
+
+        checksums: dict[str, ChecksumInfo] = {}
+        if download_config.verify_checksums:
+            species_url = get_ensembl_species_url(
+                download_config.species, download_config.base_url
+            )
+            try:
+                checksums = download_checksums(species_url)
+            except FileNotFoundError:
+                console.print("[yellow]No CHECKSUMS file found - skipping checksum verification[/yellow]")
+            except Exception as exc:
+                console.print(f"[yellow]Failed to download checksums: {exc}[/yellow]")
+
+        def _download_url(url: str) -> tuple[str, bool]:
+            filename = url.rsplit("/", 1)[-1]
+            try:
+                _ = download_path(
+                    url=url,
+                    name="ensembl",
+                    dest_dir=vcf_dir,
+                    check_files=True,
+                    http_max_pool=download_config.http_max_pool,
+                    connect_timeout=download_config.connect_timeout,
+                    sock_read_timeout=download_config.sock_read_timeout,
+                    retries=download_config.retries,
+                    expected_checksum=checksums.get(filename),
+                )
+                return filename, True
+            except Exception:
+                return filename, False
+
+        if missing_urls:
+            failures: list[str] = []
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = {executor.submit(_download_url, url): url for url in missing_urls}
+                completed = 0
+                for future in as_completed(futures):
+                    url = futures[future]
+                    completed += 1
+                    filename = url.rsplit("/", 1)[-1]
+                    console.print(f"   [{completed}/{len(missing_urls)}] {filename}...")
+                    _, success = future.result()
+                    if not success:
+                        failures.append(filename)
+
+            if failures:
+                console.print(
+                    f"[bold red]❌ Failed to download {len(failures)} files.[/bold red]"
+                )
+                for filename in failures:
+                    console.print(f"   - {filename}")
+                raise typer.Exit(1)
+        else:
+            console.print("   No missing VCF files to download.")
+
+        console.print("[green]✓ VCF files downloaded[/green]")
+
+        console.print("[bold]Registering VCF partitions in Dagster...[/bold]")
         for i, partition_key in enumerate(partition_keys, 1):
             console.print(f"   [{i}/{len(partition_keys)}] {partition_key}...")
             result = materialize(
@@ -277,9 +378,9 @@ def _dagster_run_ensembl(
                 partition_key=partition_key,
             )
             if not result.success:
-                console.print(f"[bold red]❌ Failed to download {partition_key}![/bold red]")
+                console.print(f"[bold red]❌ Failed to register {partition_key}![/bold red]")
                 raise typer.Exit(1)
-        console.print("[green]✓ All VCF files downloaded[/green]")
+        console.print("[green]✓ All VCF partitions registered[/green]")
     
     if job_name in ("convert", "prepare", "full"):
         # Step 3: Convert to Parquet (partitioned)
@@ -893,7 +994,7 @@ def genome(
         # Download mouse genome
         uv run prepare-annotations genome --species mus_musculus
     """
-    from prepare_annotations.genome_downloader import (
+    from prepare_annotations.downloaders.genome import (
         GenomeType,
         MaskingType,
         download_ensembl_genome,
@@ -1230,8 +1331,8 @@ def _get_dagster_home() -> Path:
             p = (root / p).resolve()
         return p
 
-    # Import at call-time so tests (and callers) can override resources.ROOT_DIR if needed.
-    from prepare_annotations import resources as _resources
+    # Import at call-time so tests (and callers) can override core.paths.ROOT_DIR if needed.
+    from prepare_annotations.core import paths as _resources
 
     dagster_home_path = _resolve_dagster_home(_resources.ROOT_DIR, os.environ.get("DAGSTER_HOME"))
     dagster_home_path.mkdir(parents=True, exist_ok=True)
@@ -1435,15 +1536,12 @@ def dagster_materialize(
     console.print()
     
     # Import all assets to build the asset map
-    from prepare_annotations.pipelines.ensembl_assets import (
-        ensembl_ftp_source,
+    from prepare_annotations.assets import (
         ensembl_vcf_urls,
         ensembl_vcf_file,
         ensembl_parquet_file,
         ensembl_all_parquet_files,
         ensembl_hf_upload,
-    )
-    from prepare_annotations.pipelines.module_assets import (
         ensembl_variations_source,
         longevitymap_annotations,
         longevitymap_studies,
@@ -1451,7 +1549,7 @@ def dagster_materialize(
         longevitymap_with_ensembl,
         longevitymap_hf_upload,
     )
-    from prepare_annotations.pipelines.io_managers import (
+    from prepare_annotations.dagster_io_managers import (
         ensembl_cache_io_manager,
         huggingface_upload_io_manager,
     )
@@ -1535,7 +1633,7 @@ def dagster_job(
         _ensure_dagster_config(dagster_home)
         os.environ["DAGSTER_HOME"] = str(dagster_home)
         
-        from prepare_annotations.pipelines.definitions import defs
+        from prepare_annotations.definitions import defs
         
         console.print(f"\n[bold cyan]🔷 Executing Job: {job_name}[/bold cyan]")
         
@@ -1718,6 +1816,19 @@ def dagster_run_longevitymap(
         raise typer.Exit(1)
 
 
+def _register_dagster_commands() -> None:
+    dagster_app.command()(ensembl)
+    dagster_app.command(name="ui")(dagster_ui)
+    dagster_app.command(name="materialize")(dagster_materialize)
+    dagster_app.command(name="job")(dagster_job)
+    dagster_app.command(name="assets")(dagster_list_assets)
+    dagster_app.command(name="jobs")(dagster_list_jobs)
+    dagster_app.command(name="longevitymap")(dagster_run_longevitymap)
+
+
+_register_dagster_commands()
+
+
 @app.command()
 def version():
     """Show version information."""
@@ -1727,6 +1838,30 @@ def version():
         console.print(f"prepare-annotations version: [bold green]{v}[/bold green]")
     except importlib.metadata.PackageNotFoundError:
         console.print("prepare-annotations version: [yellow]development[/yellow]")
+
+
+def _run_ensembl_cli():
+    """Standalone entrypoint for dagster-ensembl script."""
+    from prepare_annotations.cli import dagster_app
+    import sys
+    # Insert 'ensembl' as the first argument if not already there
+    if len(sys.argv) > 1 and sys.argv[1] not in ["ensembl", "--help"]:
+        sys.argv.insert(1, "ensembl")
+    elif len(sys.argv) == 1:
+        sys.argv.append("ensembl")
+    dagster_app()
+
+
+def _run_ui_cli():
+    """Standalone entrypoint for dagster-ui script."""
+    from prepare_annotations.cli import dagster_app
+    import sys
+    # Insert 'ui' as the first argument if not already there
+    if len(sys.argv) > 1 and sys.argv[1] not in ["ui", "--help"]:
+        sys.argv.insert(1, "ui")
+    elif len(sys.argv) == 1:
+        sys.argv.append("ui")
+    dagster_app()
 
 
 if __name__ == "__main__":

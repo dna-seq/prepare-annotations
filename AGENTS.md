@@ -4,31 +4,42 @@ This repository is dedicated to the preparation of genomic annotation data (Ense
 
 ## Repository Layout (uv package)
 
-- `src/prepare_annotations/`: Core logic and CLI.
-  - `cli.py`: Main Typer CLI entrypoint.
-  - `pipelines/`: Primary Dagster-based pipelines.
-  - `vcf_downloader.py`: VCF download utilities.
-  - `genome_downloader.py`: Ensembl genome download utilities.
-  - `huggingface_uploader.py`: Upload utilities for HuggingFace Hub.
-  - `dataset_card_generator.py`: Dataset card templates.
-  - `vcf_parquet_splitter.py`: Variant splitting by type.
-  - `convert_modules/`: Module conversion to unified annotation schema.
-    - `modules.py`: CLI for downloading and managing modules.
-    - `longevitymap.py`: LongevityMap conversion.
-    - `coronary.py`: Coronary disease conversion.
-    - `drugs.py`: Pharmacogenomics conversion.
-    - `lipidmetabolism.py`: Lipid metabolism conversion.
-    - `superhuman.py`: Elite performance genetics conversion.
-    - `vo2max.py`: VO2max conversion.
-    - `common.py`: Shared conversion utilities.
-  - `pipelines/`: Primary Dagster-based pipelines.
-  - `io.py`: VCF/Parquet I/O utilities.
-  - `runtime.py`: Execution environment and profiling.
-  - `models.py`: Pydantic models for results.
-- `dataset_cards/`: Markdown templates for Hugging Face dataset cards.
-- `tests/`: Unit and integration tests.
-  - `conftest.py`: Shared fixtures including OakVar module download helpers.
-  - `test_longevitymap_module.py`: Comprehensive validation of longevitymap conversion.
+The package follows Dagster best practices with utilities organized in subpackages:
+
+- `src/prepare_annotations/`: Main package
+  - `definitions.py`: **Main Dagster definitions** (assets, jobs, resources)
+  - `pipelines.py`: **Standalone API** (PreparationPipelines class)
+  - `cli.py`: Main Typer CLI entrypoint
+  
+  - `core/`: Core utilities
+    - `io.py`: VCF/Parquet I/O utilities
+    - `models.py`: Pydantic models for results
+    - `paths.py`: Path helpers and resource locations
+    - `runtime.py`: Execution environment and profiling
+    - `config.py`: Configuration helpers
+    - `splitter.py`: Variant splitting by type
+  
+  - `assets/`: Dagster assets
+    - `ensembl.py`: Ensembl VCF pipeline assets
+    - `modules.py`: OakVar module conversion assets
+  
+  - `downloaders/`: Download utilities
+    - `vcf.py`: VCF download with retry/resume
+    - `genome.py`: Ensembl genome FASTA download
+  
+  - `huggingface/`: HuggingFace Hub integration
+    - `uploader.py`: Upload utilities
+    - `dataset_cards.py`: Dataset card templates
+  
+  - `converters/`: OakVar module converters
+    - `longevitymap.py`, `coronary.py`, `drugs.py`, etc.
+    - `common.py`: Shared conversion utilities
+  
+  - `pipelines/`: Legacy Dagster location (backward compat)
+  - `convert_modules/`: Legacy converters location (backward compat)
+
+- `dataset_cards/`: Markdown templates for Hugging Face dataset cards
+- `tests/`: Unit and integration tests
 
 ## Coding Standards
 
@@ -39,9 +50,95 @@ This repository is dedicated to the preparation of genomic annotation data (Ense
 - **Eliot**: Used for structured logging and action tracking.
 - **Typer**: Mandatory for CLI tools.
 - **Pydantic 2**: Mandatory for data classes.
-- **Avoid __all__: avoid __init__.py with __all__ as it confuses where things are located
+- **Avoid __all__**: Avoid __init__.py with __all__ as it confuses where things are located.
 
-## Commands
+## Import Guidelines
+
+For new code, use the organized subpackages:
+
+```python
+# Dagster definitions
+from prepare_annotations.definitions import defs
+
+# Standalone API
+from prepare_annotations.pipelines import PreparationPipelines
+
+# Assets
+from prepare_annotations.assets import ensembl_vcf_urls, longevitymap_weights
+
+# Core utilities
+from prepare_annotations.core.io import read_vcf_file, vcf_to_parquet
+from prepare_annotations.core.models import PreparationResult
+from prepare_annotations.core.paths import get_cache_dir, LOGS_DIR
+
+# Downloaders
+from prepare_annotations.downloaders.vcf import download_path, list_paths
+from prepare_annotations.downloaders.genome import download_ensembl_genome
+
+# HuggingFace
+from prepare_annotations.huggingface.uploader import upload_parquet_to_hf
+from prepare_annotations.huggingface.dataset_cards import generate_ensembl_card
+
+# Converters
+from prepare_annotations.converters import convert_longevitymap
+```
+
+## Dagster Guide (Agents)
+
+These pipelines are Dagster-first. Follow these rules to avoid the issues we already hit:
+
+### 1) Use modern API (no legacy CLI)
+
+- Do not use `dagster job execute` or other deprecated CLI for orchestration.
+- Prefer Python API: `materialize()` for assets, `execute_job()` for non-partitioned jobs.
+- If CLI is needed, use Dagster dev server only (`uv run dagster dev -m prepare_annotations`).
+
+### 2) Dynamic partitions must be explicit
+
+- Use dynamic partitions whenever the upstream file list is external or changing (FTP, HTTP, HF repo, etc.).
+- The discovery asset must register partitions via `DynamicPartitionsDefinition`.
+- Partitioned assets must use `context.partition_key` and must not be run without a partition key.
+
+### 3) Materialize with full asset list + selection
+
+When using `materialize()`:
+
+- Always pass the full asset graph (all upstream assets).
+- Use `selection=["asset_name"]` to run a single asset.
+- Do not pass config for assets not present in the selection.
+
+Example pattern:
+
+- `materialize(assets=all_assets, selection=["download_asset"], partition_key="...")`
+
+### 4) IO manager must resolve partition paths
+
+Partitioned assets need file-level input paths:
+
+- Inputs must resolve to concrete files for each partition key
+- If an IO manager returns a directory for a partitioned asset, downstream processing will crash
+
+### 5) Collector must depend on partitioned outputs
+
+Collector assets must declare deps on the partitioned asset to ensure correct lineage and ordering.
+
+### 6) Filter temporary outputs before upload
+
+Do not upload temp files. Filter out:
+
+- files starting with `tmp`
+- files ending with `.tmp.parquet` or `.parquet.tmp`
+- dotfiles
+
+### 7) Concurrency and memory safety
+
+- Use download parallelism (I/O bound), but keep conversion limited.
+- Concurrency should be enforced via Dagster tag limits in `dagster.yaml`.
+
+### 8) Dagster home
+
+- `DAGSTER_HOME` is `data/interim/dagster`
+- Always set it for runs so UI and API share the same instance.
 
 ### Primary Dagster Pipelines (Recommended)
 

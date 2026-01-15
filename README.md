@@ -30,6 +30,8 @@ uv sync
 
 The primary way to run pipelines is using Dagster. This provides parallel execution, resumable downloads, and integrated Hugging Face uploads.
 
+![Dagster Pipeline Lineage](images/pipelines.jpg)
+
 #### Ensembl Pipeline
 
 ```bash
@@ -125,6 +127,57 @@ The following modules are available from the [dna-seq organization](https://gith
 - **just_prs**: Polygenic risk score data
 - **just_drugs**: Pharmacogenomic data
 - **just_superhuman**: Elite performance genetics
+
+## Package Structure
+
+The package follows Dagster best practices with utilities organized in subpackages:
+
+```
+src/prepare_annotations/
+├── definitions.py          # Main Dagster definitions (assets, jobs, resources)
+├── pipelines.py            # Standalone API (PreparationPipelines)
+├── cli.py                  # Typer CLI entrypoint
+│
+├── core/                   # Core utilities
+│   ├── io.py               # VCF/Parquet I/O
+│   ├── models.py           # Pydantic models
+│   ├── paths.py            # Path helpers
+│   └── runtime.py          # Profiling, environment
+│
+├── assets/                 # Dagster assets
+│   ├── ensembl.py          # Ensembl VCF pipeline
+│   └── modules.py          # OakVar module conversion
+│
+├── downloaders/            # Download utilities
+│   ├── vcf.py              # VCF download
+│   └── genome.py           # Genome FASTA download
+│
+├── huggingface/            # HuggingFace Hub integration
+│   ├── uploader.py         # Upload utilities
+│   └── dataset_cards.py    # Dataset card templates
+│
+└── converters/             # OakVar module converters
+```
+
+### Import Examples
+
+```python
+# Dagster definitions
+from prepare_annotations.definitions import defs
+
+# Standalone API
+from prepare_annotations.pipelines import PreparationPipelines
+
+# Core utilities
+from prepare_annotations.core.io import read_vcf_file
+from prepare_annotations.core.paths import get_cache_dir
+
+# Downloaders
+from prepare_annotations.downloaders.vcf import download_path
+
+# HuggingFace
+from prepare_annotations.huggingface.uploader import upload_parquet_to_hf
+```
 
 ## Development
 

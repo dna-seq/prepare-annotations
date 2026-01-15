@@ -22,7 +22,7 @@ from dagster import (
 )
 from eliot import start_action
 
-from prepare_annotations.resources import (
+from prepare_annotations.core.paths import (
     get_default_ensembl_cache_dir,
     MODULES_DIR,
     MODULES_OUTPUT_DIR,
@@ -33,8 +33,8 @@ from prepare_annotations.pipelines.configs import (
     AnnotatorsUploadConfig,
     DuckDBConfig,
 )
-from prepare_annotations.convert_modules.common import convert_module_weights_with_ensembl
-from prepare_annotations.convert_modules.longevitymap import (
+from prepare_annotations.converters import convert_module_weights_with_ensembl
+from prepare_annotations.converters import (
     convert_longevitymap_annotations,
     convert_longevitymap_studies,
 )
@@ -192,6 +192,7 @@ def get_longevitymap_output_dir(config: LongevityMapConfig) -> Path:
         "schema": "rsid, module, gene, phenotype, category",
         "format": "parquet",
     },
+    op_tags={"dagster/concurrency_key": "module_conversion"},
 )
 def longevitymap_annotations(
     context: AssetExecutionContext,
@@ -236,6 +237,7 @@ def longevitymap_annotations(
         "schema": "rsid, module, pmid, population, p_value, conclusion, study_design",
         "format": "parquet",
     },
+    op_tags={"dagster/concurrency_key": "module_conversion"},
 )
 def longevitymap_studies(
     context: AssetExecutionContext,
@@ -280,6 +282,7 @@ def longevitymap_studies(
         "schema": "rsid, genotype, module, weight, state, priority, conclusion, curator, method",
         "format": "parquet",
     },
+    op_tags={"dagster/concurrency_key": "module_conversion"},
 )
 def longevitymap_weights(
     context: AssetExecutionContext,
@@ -354,6 +357,7 @@ def longevitymap_weights(
         "format": "parquet",
         "join_type": "inner",
     },
+    op_tags={"dagster/concurrency_key": "ensembl_join"},
 )
 def longevitymap_with_ensembl(
     context: AssetExecutionContext,
@@ -573,8 +577,8 @@ def longevitymap_hf_upload(
     Uses batch upload for efficiency (single commit for all files).
     Only uploads files that differ in size from remote versions.
     """
-    from prepare_annotations.huggingface_uploader import upload_files_batch
-    from prepare_annotations.models import SingleUploadResult
+    from prepare_annotations.huggingface.uploader import upload_files_batch
+    from prepare_annotations.core.models import SingleUploadResult
     
     logger = context.log
     

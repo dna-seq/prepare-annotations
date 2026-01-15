@@ -411,12 +411,15 @@ def convert_module_weights_with_ensembl(
     curator: str = "unknown",
     method: str = "literature_review",
     species: str = "homo_sapiens",
+    memory_limit: str | None = None,
+    temp_directory: str = "/tmp/duckdb_module_conversion",
 ) -> pl.LazyFrame:
     """
     Convert OakVar module weights to unified schema with Ensembl genotype resolution.
     
-    This is the main entry point for converting module weights with proper
-    genotype expansion based on zygosity and Ensembl data.
+    Uses DuckDB for memory-efficient joins - no manual RSID filtering needed.
+    DuckDB's optimizer handles the join pushdown automatically and spills to disk
+    if memory is tight.
     
     Schema output:
     - rsid: Variant identifier
@@ -429,87 +432,189 @@ def convert_module_weights_with_ensembl(
     - curator: Curator name
     - method: Curation method
     
-    All operations are lazy for memory efficiency on laptops.
-    
     Args:
         db_path: Path to OakVar module SQLite database
         ensembl_source: Either:
             - Path to local Ensembl cache directory
             - HuggingFace path (hf://datasets/just-dna-seq/ensembl_variations)
-            - Pre-loaded Ensembl LazyFrame
+            - Pre-loaded Ensembl LazyFrame (will be materialized to temp parquet)
         module_name: Name for the module column
         curator: Curator name
         method: Curation method
         species: Species name (for local file pattern)
+        memory_limit: DuckDB memory limit (e.g., "8GB"). Auto-detected if None.
+        temp_directory: Directory for DuckDB temp files
         
     Returns:
         LazyFrame with unified weight schema
     """
-    # Load raw weights
-    weights = load_weights_raw(db_path)
-    rsids = (
-        weights
-        .select(pl.col("rsid").unique())
-        .collect()
-        .get_column("rsid")
-        .to_list()
-    )
+    import duckdb
+    import tempfile
     
-    # Load or use provided Ensembl data
+    # Resolve Ensembl parquet files
     if isinstance(ensembl_source, pl.LazyFrame):
-        ensembl = ensembl_source
+        # Materialize LazyFrame to temp parquet for DuckDB
+        temp_dir = Path(tempfile.mkdtemp(prefix="ensembl_"))
+        temp_parquet = temp_dir / "ensembl_temp.parquet"
+        ensembl_source.collect().write_parquet(temp_parquet)
+        ensembl_files = [str(temp_parquet)]
     else:
-        ensembl = scan_ensembl_variations(ensembl_source, species=species)
-    ensembl = ensembl.filter(pl.col("id").is_in(rsids))
+        ensembl_files = _resolve_ensembl_parquet_files(ensembl_source, species)
     
-    # Get minimal Ensembl columns for joining (memory efficient)
-    ensembl_minimal = get_ensembl_for_genotype_resolution(ensembl)
+    # Auto-detect memory limit if not specified
+    if memory_limit is None:
+        import psutil
+        available_gb = psutil.virtual_memory().available / (1024**3)
+        memory_gb = max(4, min(int(available_gb * 0.6), 64))
+        memory_limit = f"{memory_gb}GB"
     
-    # Expand all genotypes with proper het handling
-    with_genotype = expand_all_genotypes_with_ensembl(
-        weights,
-        ensembl_minimal,
-    )
+    # Build DuckDB query
+    db_sql = str(db_path).replace("'", "''")
+    ensembl_list_sql = "[" + ", ".join(f"'{p.replace(chr(39), chr(39)+chr(39))}'" for p in ensembl_files) + "]"
+    module_sql = module_name.replace("'", "''")
+    curator_sql = curator.replace("'", "''")
+    method_sql = method.replace("'", "''")
     
-    # Derive state from weight and add module metadata
-    result = with_genotype.with_columns(
-        # Derive state from weight sign
-        pl.when(pl.col("weight") > 0)
-        .then(pl.lit("protective"))
-        .when(pl.col("weight") < 0)
-        .then(pl.lit("risk"))
-        .otherwise(pl.lit("neutral"))
-        .alias("state"),
-        # Add metadata columns
-        pl.lit(module_name).alias("module"),
-        pl.lit(curator).alias("curator"),
-        pl.lit(method).alias("method"),
-        # Null conclusion (module-level, not genotype-specific)
-        pl.lit(None).cast(pl.Utf8).alias("conclusion"),
-    )
+    con = duckdb.connect()
+    con.execute(f"SET memory_limit = '{memory_limit}'")
+    Path(temp_directory).mkdir(parents=True, exist_ok=True)
+    con.execute(f"SET temp_directory = '{temp_directory.replace(chr(39), chr(39)+chr(39))}'")
+    con.execute("SET preserve_insertion_order = false")
     
-    # Deduplicate by (rsid, genotype, module) and select final schema
-    # Note: genotype is list[str], so dedup works on list equality
-    return (
-        result
-        .group_by(["rsid", "genotype", "module"])
-        .agg([
-            pl.col("weight").first(),
-            pl.col("state").first(),
-            pl.col("priority").first(),
-            pl.col("conclusion").first(),
-            pl.col("curator").first(),
-            pl.col("method").first(),
-        ])
-        .select(
-            "rsid",
-            "genotype",
-            "module",
-            "weight",
-            "state",
-            "priority",
-            "conclusion",
-            "curator",
-            "method",
+    # Load httpfs if we have remote files
+    if any(p.startswith(("http://", "https://")) for p in ensembl_files):
+        con.execute("LOAD httpfs")
+    
+    # Single SQL query handles everything:
+    # 1. Reads weights from SQLite
+    # 2. Joins with Ensembl (DuckDB optimizes this automatically)
+    # 3. Expands genotypes based on zygosity
+    # 4. Derives state from weight sign
+    query = f"""
+    WITH weights_raw AS (
+        SELECT rsid, allele, state AS allele_state, zygosity, weight, priority
+        FROM sqlite_scan('{db_sql}', 'allele_weights')
+    ),
+    ensembl AS (
+        SELECT id, ref, alts
+        FROM read_parquet({ensembl_list_sql})
+    ),
+    -- Homozygous: allele "C" -> ["C", "C"]
+    hom_genotypes AS (
+        SELECT 
+            rsid,
+            list_sort([allele, allele]) AS genotype,
+            weight,
+            priority
+        FROM weights_raw
+        WHERE zygosity = 'hom'
+    ),
+    -- Heterozygous + spec: allele already contains full genotype "CT" -> ["C", "T"]
+    het_spec_genotypes AS (
+        SELECT
+            rsid,
+            list_sort([substr(allele, 1, 1), substr(allele, 2, 1)]) AS genotype,
+            weight,
+            priority
+        FROM weights_raw
+        WHERE zygosity = 'het' AND allele_state = 'spec' AND length(allele) = 2
+    ),
+    -- Heterozygous + alt: join with Ensembl to get all possible other alleles
+    het_alt_with_ensembl AS (
+        SELECT 
+            w.rsid,
+            w.allele AS curated_allele,
+            w.weight,
+            w.priority,
+            e.ref,
+            e.alts
+        FROM weights_raw w
+        JOIN ensembl e ON e.id = w.rsid
+        WHERE w.zygosity = 'het' AND w.allele_state = 'alt'
+    ),
+    -- Expand het+alt: curated allele pairs with each valid other allele
+    het_alt_expanded AS (
+        SELECT
+            rsid,
+            list_sort([curated_allele, other_allele]) AS genotype,
+            weight,
+            priority
+        FROM (
+            -- Pair with ref if ref != curated_allele
+            SELECT rsid, curated_allele, ref AS other_allele, weight, priority
+            FROM het_alt_with_ensembl
+            WHERE ref != curated_allele
+            UNION ALL
+            -- Pair with each alt that != curated_allele
+            SELECT h.rsid, h.curated_allele, alt.alt AS other_allele, h.weight, h.priority
+            FROM het_alt_with_ensembl h, UNNEST(COALESCE(h.alts, [])) AS alt(alt)
+            WHERE alt.alt != h.curated_allele
         )
+    ),
+    -- Combine all genotype sources
+    all_genotypes AS (
+        SELECT * FROM hom_genotypes
+        UNION ALL
+        SELECT * FROM het_spec_genotypes
+        UNION ALL
+        SELECT * FROM het_alt_expanded
+    ),
+    -- Deduplicate and add metadata
+    deduplicated AS (
+        SELECT DISTINCT
+            rsid,
+            genotype,
+            weight,
+            priority
+        FROM all_genotypes
     )
+    SELECT
+        rsid,
+        genotype,
+        '{module_sql}' AS module,
+        weight,
+        CASE
+            WHEN weight > 0 THEN 'protective'
+            WHEN weight < 0 THEN 'risk'
+            ELSE 'neutral'
+        END AS state,
+        priority,
+        NULL::VARCHAR AS conclusion,
+        '{curator_sql}' AS curator,
+        '{method_sql}' AS method
+    FROM deduplicated
+    """
+    
+    result_df = con.execute(query).pl()
+    con.close()
+    
+    return result_df.lazy()
+
+
+def _resolve_ensembl_parquet_files(source: Path | str, species: str) -> list[str]:
+    """Resolve Ensembl parquet file paths from a source path or HuggingFace URI."""
+    source_str = str(source)
+    
+    if source_str.startswith("hf://datasets/"):
+        from huggingface_hub import HfApi
+        repo_id = source_str.split("hf://datasets/", 1)[1].strip("/")
+        api = HfApi()
+        repo_files = api.list_repo_files(repo_id=repo_id, repo_type="dataset")
+        parquet_files = [f for f in repo_files if f.startswith("data/") and f.endswith(".parquet")]
+        if not parquet_files:
+            raise FileNotFoundError(f"No parquet files found in HuggingFace repo {repo_id}")
+        return [f"https://huggingface.co/datasets/{repo_id}/resolve/main/{f}" for f in parquet_files]
+    
+    source_path = Path(source_str)
+    if source_path.is_file():
+        return [str(source_path)]
+    if not source_path.exists():
+        raise FileNotFoundError(f"Ensembl source not found: {source_path}")
+    
+    # Try species-specific pattern first
+    parquet_files = sorted(source_path.glob(f"{species}-chr*.parquet"))
+    if not parquet_files:
+        parquet_files = sorted(source_path.glob("*.parquet"))
+    if not parquet_files:
+        raise FileNotFoundError(f"No parquet files found in {source_path}")
+    return [str(p) for p in parquet_files]

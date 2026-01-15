@@ -32,8 +32,10 @@ dependencies = [
 
 [project.scripts]
 prepare-annotations = "prepare_annotations.cli:app"
-prepare = "prepare_annotations.cli:app"
+prepare = "prepare_annotations.cli:dagster_app"
 modules = "prepare_annotations.convert_modules.modules:app"
+dagster-ensembl = "prepare_annotations.cli:_run_ensembl_cli"
+dagster-ui = "prepare_annotations.cli:_run_ui_cli"
 
 [build-system]
 requires = ["uv_build>=0.9.7,<0.10.0"]

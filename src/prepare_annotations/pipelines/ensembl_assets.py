@@ -38,13 +38,13 @@ from prepare_annotations.pipelines.configs import (
     ParquetConversionConfig,
     HuggingFaceUploadConfig,
 )
-from prepare_annotations.pipelines.resources import (
+from prepare_annotations.core.paths import (
     get_default_ensembl_cache_dir,
     get_ensembl_species_url,
     get_ensembl_vcf_pattern,
 )
-from prepare_annotations.io import _default_parquet_path
-from prepare_annotations.runtime import resource_tracker
+from prepare_annotations.core.io import _default_parquet_path
+from prepare_annotations.core.runtime import resource_tracker
 
 
 # Retry policy for download operations - exponential backoff
@@ -56,6 +56,19 @@ download_retry_policy = RetryPolicy(
 
 # Dynamic partitions for per-file VCF downloads - registered at runtime by ensembl_vcf_urls
 ENSEMBL_VCF_PARTITIONS = DynamicPartitionsDefinition(name="ensembl_vcf_file")
+
+
+def _is_uploadable_parquet(path: Path) -> bool:
+    if not path.name.endswith(".parquet"):
+        return False
+    lowered = path.name.lower()
+    if lowered.startswith("."):
+        return False
+    if lowered.startswith("tmp"):
+        return False
+    if lowered.endswith(".tmp.parquet") or lowered.endswith(".parquet.tmp"):
+        return False
+    return True
 
 
 # ============================================================================
@@ -99,7 +112,7 @@ def ensembl_vcf_urls(
     This asset lists the remote VCF files and saves the URLs for downstream
     download assets. Registers dynamic partitions for per-file processing.
     """
-    from prepare_annotations.vcf_downloader import list_paths
+    from prepare_annotations.downloaders.vcf import list_paths
     
     logger = context.log
     
@@ -179,7 +192,7 @@ def ensembl_vcf_file(
     Each partition corresponds to one VCF file discovered by ensembl_vcf_urls.
     Uses checksum verification and resumable downloads.
     """
-    from prepare_annotations.vcf_downloader import (
+    from prepare_annotations.downloaders.vcf import (
         download_path,
         download_checksums,
         ChecksumInfo,
@@ -277,7 +290,7 @@ def ensembl_parquet_file(
     Each partition corresponds to one VCF file. Uses streaming conversion
     via sink_parquet for memory efficiency.
     """
-    from prepare_annotations.io import vcf_to_parquet
+    from prepare_annotations.core.io import vcf_to_parquet
     
     logger = context.log
     partition_key = context.partition_key
@@ -369,7 +382,9 @@ def ensembl_all_parquet_files(
     species_dir = urls_file.parent
     
     # Find all parquet files
-    parquet_files = sorted(species_dir.glob("*.parquet"))
+    parquet_files = sorted(
+        p for p in species_dir.glob("*.parquet") if _is_uploadable_parquet(p)
+    )
     
     if not parquet_files:
         raise ValueError(f"No parquet files found in {species_dir}. Run ensembl_parquet_file first.")
@@ -414,8 +429,8 @@ def ensembl_hf_upload(
     Uses batch upload for efficiency (single commit for all files).
     Only uploads files that differ in size from remote versions.
     """
-    from prepare_annotations.huggingface_uploader import upload_parquet_to_hf
-    from prepare_annotations.dataset_card_generator import generate_ensembl_card
+    from prepare_annotations.huggingface.uploader import upload_parquet_to_hf
+    from prepare_annotations.huggingface.dataset_cards import generate_ensembl_card
     
     logger = context.log
 
@@ -426,7 +441,9 @@ def ensembl_hf_upload(
     logger.info(f"Uploading from {species_dir} to {config.repo_id}")
     
     # Find parquet files
-    parquet_files = sorted(p for p in species_dir.glob(config.pattern) if p.is_file())
+    parquet_files = sorted(
+        p for p in species_dir.glob(config.pattern) if p.is_file() and _is_uploadable_parquet(p)
+    )
     
     if not parquet_files:
         all_parquets = list(species_dir.rglob("*.parquet"))

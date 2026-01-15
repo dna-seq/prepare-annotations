@@ -13,16 +13,19 @@ from eliot import start_action
 from platformdirs import user_cache_dir
 from pycomfort.logging import to_nice_stdout, to_nice_file
 
-from prepare_annotations.io import is_parquet, _default_parquet_path
-from prepare_annotations.resources import (
+# Use new core imports
+from prepare_annotations.core.io import is_parquet, _default_parquet_path
+from prepare_annotations.core.paths import (
     get_cache_dir,
     get_default_cache_dir,
     get_default_input_dir,
     get_default_interim_dir,
     get_default_output_dir,
 )
-from prepare_annotations.models import PreparationResult, SplitResult, BatchUploadResult, RSIDCoordinateResult
-from prepare_annotations.vcf_downloader import (
+from prepare_annotations.core.models import PreparationResult, SplitResult, BatchUploadResult, RSIDCoordinateResult
+
+# Use new downloader imports
+from prepare_annotations.downloaders.vcf import (
     list_paths,
     download_path,
     convert_to_parquet,
@@ -30,11 +33,13 @@ from prepare_annotations.vcf_downloader import (
     download_checksums,
     ChecksumInfo,
 )
-from prepare_annotations.huggingface_uploader import (
+
+# Use new huggingface imports
+from prepare_annotations.huggingface.uploader import (
     collect_parquet_files,
     upload_parquet_to_hf,
 )
-from prepare_annotations.dataset_card_generator import (
+from prepare_annotations.huggingface.dataset_cards import (
     generate_clinvar_card,
     generate_ensembl_card,
     generate_dbsnp_card,
@@ -199,7 +204,7 @@ def compute_rsid_coordinates(
 
             if not output_dataset:
                 action.log(message_type="info", step="merging_chunks_pyarrow", total_chunks=len(chunk_files))
-                from prepare_annotations.io import merge_parquet_files
+                from prepare_annotations.core.io import merge_parquet_files
                 merge_parquet_files(
                     input_files=chunk_files,
                     output_path=output_path,

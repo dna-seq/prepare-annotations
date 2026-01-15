@@ -1,0 +1,159 @@
+"""
+Variant splitting utilities for parquet files.
+"""
+import time
+from pathlib import Path
+from typing import Dict, Optional, List
+import polars as pl
+from eliot import start_action
+
+from prepare_annotations.core.config import get_default_workers
+from prepare_annotations.core.models import SplitResult, PreparationResult
+
+
+def split_variants_by_tsa(
+    parquet_path: Path, 
+    explode_snv_alt: bool = False,
+    write_to: Optional[Path] = None
+) -> Dict[str, Path]:
+    """
+    Split variants in a parquet file by TSA (variant type).
+    
+    Args:
+        parquet_path: Path to parquet file containing VCF data
+        explode_snv_alt: Whether to explode ALT column on "|" separator for SNV variants
+        write_to: Optional directory to write split parquet files to
+        
+    Returns:
+        Dictionary mapping TSA (variant type) to written parquet file paths
+    """
+    # Skip non-parquet or temporary files
+    if not parquet_path.suffix == '.parquet' or parquet_path.name.endswith(".tmp.parquet"):
+        return {}
+        
+    # Default output directory next to the input parquet if not provided
+    if write_to is None:
+        write_to = parquet_path.parent / "splitted_variants"
+    write_to.mkdir(parents=True, exist_ok=True)
+    
+    with start_action(action_type="split_variants_by_tsa", parquet_path=str(parquet_path), explode_snv_alt=explode_snv_alt, write_to=str(write_to)) as action:
+        df = pl.scan_parquet(parquet_path)
+        
+        # Normalize TSA column name to lowercase 'tsa' (some VCFs use TSA instead of tsa)
+        if "TSA" in df.columns and "tsa" not in df.columns:
+            df = df.rename({"TSA": "tsa"})
+            
+        # Get cleaner stem (remove .vcf if present)
+        stem = parquet_path.stem
+        if stem.endswith(".vcf"):
+            stem = stem[:-4]
+            
+        # Get unique TSAs (variant types)
+        tsas = df.select("tsa").unique().collect(streaming=True).to_series().to_list()
+        action.log(message_type="info", tsas=tsas, explode_snv_alt=explode_snv_alt)
+        
+        # Check if all split files already exist
+        result: Dict[str, Path] = {}
+        all_exist = True
+        
+        for tsa in tsas:
+            tsa_folder = write_to / tsa
+            where = tsa_folder / f"{stem}.parquet"
+            result[tsa] = where
+            
+            if not where.exists():
+                all_exist = False
+                break
+        
+        # If all split files already exist, skip splitting
+        if all_exist:
+            action.log(
+                message_type="info",
+                step="reusing_existing_splits",
+                split_count=len(result),
+                tsas=tsas
+            )
+            return result
+        
+        # Otherwise, perform splitting
+        action.log(message_type="info", step="performing_split", tsas=tsas)
+        result = {}
+        start_time = time.time()
+        
+        # Optimization: for large files, using multiple sink_parquet calls is slow as it scans the file multiple times.
+        # However, for now we keep the Polars logic but ensure it's as efficient as possible.
+        # In the future, we could use DuckDB's PARTITION_BY for a single-pass split.
+        
+        for tsa in tsas:
+            # We filter for each TSA. Polars will try to optimize this.
+            df_tsa = df.filter(pl.col("tsa") == tsa)
+            
+            # Explode ALT column for SNV variants if requested
+            if tsa == "SNV" and explode_snv_alt:
+                df_tsa = df_tsa.with_columns(pl.col("alt").str.split("|")).explode("alt")
+            
+            # Create TSA-specific subfolder
+            tsa_folder = write_to / tsa
+            tsa_folder.mkdir(parents=True, exist_ok=True)
+            
+            # Write to parquet file using a temporary file for atomicity
+            where = tsa_folder / f"{stem}.parquet"
+            temp_where = where.with_suffix(".tmp.parquet")
+            
+            action.log(message_type="info", tsa=tsa, where=str(where))
+            # Use compression level 14 for splits to get closer to level 19 size while remaining fast
+            df_tsa.sink_parquet(temp_where, compression="zstd", compression_level=14)
+            temp_where.replace(where)
+            result[tsa] = where
+        
+        # Calculate execution time
+        end_time = time.time()
+        elapsed_seconds = end_time - start_time
+        minutes = int(elapsed_seconds // 60)
+        seconds = elapsed_seconds % 60
+        execution_time = f"{minutes}:{seconds:06.3f}"
+        
+        action.log(message_type="info", execution_time=execution_time, tsas=tsas, result_count=len(result))
+        return result
+
+
+def validate_split_outputs(
+    vcf_parquet_path: list[Path],
+    split_variants_dict: list[Dict[str, Path]],
+) -> tuple[list[Path], list[Dict[str, Path]]]:
+    """
+    Validate that for each input parquet file we produced split outputs and all
+    referenced files exist. Non-parquet inputs are ignored.
+    """
+    with start_action(action_type="validate_split_outputs") as action:
+        # Normalize to lists
+        parquet_list = [vcf_parquet_path] if isinstance(vcf_parquet_path, Path) else list(vcf_parquet_path)
+        split_list = [split_variants_dict] if isinstance(split_variants_dict, dict) else list(split_variants_dict)
+
+        # Validate existence
+        def _is_parquet(p: Path) -> bool:
+            return p.suffix == ".parquet"
+
+        problems: list[str] = []
+        for idx, p in enumerate(parquet_list):
+            if not _is_parquet(p):
+                continue
+            if not p.exists():
+                problems.append(f"missing input parquet: {p}")
+                continue
+            # Get corresponding split dict if available
+            split_dict = split_list[idx] if idx < len(split_list) else {}
+            if not split_dict:
+                problems.append(f"no splits produced for: {p}")
+                continue
+            # Check that all split files exist
+            missing = [str(out) for out in split_dict.values() if not Path(out).exists()]
+            if missing:
+                problems.append(f"missing split files for {p}: {missing}")
+
+        if problems:
+            action.log(message_type="error", problems=problems)
+            raise FileNotFoundError("; ".join(problems))
+
+        action.log(message_type="info", validated=len(parquet_list))
+        return parquet_list, split_list

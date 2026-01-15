@@ -3,7 +3,9 @@
 This repo includes a **Dagster** implementation of the Ensembl preparation pipeline as a parallel alternative to the Prefect flows.
 
 The Dagster implementation lives under:
-- `src/prepare_annotations/pipelines/`
+- `src/prepare_annotations/definitions.py` (main Dagster definitions)
+- `src/prepare_annotations/assets/` (asset definitions)
+- `src/prepare_annotations/pipelines/` (legacy location, backward compatible)
 
 It is intentionally **file/directory based**: each asset materializes a concrete on-disk artifact (a JSON manifest, a directory of VCFs, a directory of Parquet files, etc.). This makes lineage inspectable and keeps memory usage predictable.
 
@@ -41,6 +43,8 @@ The default pipeline prepares Ensembl VCFs into Parquet format:
 ---
 
 ### Asset graph / lineage
+
+![Dagster Pipeline Lineage](../images/pipelines.jpg)
 
 #### Mermaid diagram
 
@@ -167,7 +171,7 @@ Then materialize assets / jobs from the UI.
 
 ### Jobs provided
 
-Jobs are defined in `src/prepare_annotations/pipelines/definitions.py`:
+Jobs are defined in `src/prepare_annotations/definitions.py`:
 
 | Job | Description |
 |-----|-------------|
@@ -214,5 +218,5 @@ The upload asset (`ensembl_hf_upload`) depends on the parquet directory output (
 - "When did we last upload, and what was uploaded vs skipped?"
 
 Uploads are executed using the existing uploader implementation:
-- `prepare_annotations.huggingface_uploader.upload_parquet_to_hf`
+- `prepare_annotations.huggingface.uploader.upload_parquet_to_hf`
 

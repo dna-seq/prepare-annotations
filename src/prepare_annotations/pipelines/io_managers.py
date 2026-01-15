@@ -10,6 +10,7 @@ from typing import Any
 
 from dagster import IOManager, io_manager, InputContext, OutputContext
 
+from prepare_annotations.io import _default_parquet_path
 from prepare_annotations.pipelines.resources import (
     get_cache_dir,
     get_default_ensembl_cache_dir,
@@ -64,6 +65,12 @@ class EnsemblCacheIOManager(IOManager):
         """Load asset by returning its cache path."""
         asset_key = context.upstream_output.asset_key.to_user_string() if context.upstream_output else "unknown"
         cache_path = self._get_asset_path(asset_key)
+
+        if asset_key == "ensembl_vcf_file" and context.partition_key:
+            cache_path = cache_path / context.partition_key
+        elif asset_key == "ensembl_parquet_file" and context.partition_key:
+            parquet_name = _default_parquet_path(Path(context.partition_key)).name
+            cache_path = cache_path / parquet_name
         
         if not cache_path.exists():
             raise FileNotFoundError(
