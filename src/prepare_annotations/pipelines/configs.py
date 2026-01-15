@@ -4,6 +4,7 @@ Dagster configuration classes for genomic data preparation pipelines.
 Configs are Pydantic-based settings that can be passed to assets at runtime.
 """
 
+import os
 from typing import Optional
 
 import psutil
@@ -48,6 +49,29 @@ class ParquetConversionConfig(Config):
     compression_level: int = 14
     alts_list: bool = True  # Add list of alternative alleles as 'alts' column
     force_convert: bool = False
+    max_concurrent_conversions: Optional[int] = None  # Auto-detect if None
+    threads: Optional[int] = None  # Auto-detect if None
+
+    def get_max_concurrent_conversions(self) -> int:
+        """Get max concurrent conversions, using auto-detection if not explicitly set."""
+        if self.max_concurrent_conversions:
+            return self.max_concurrent_conversions
+        env_value = os.getenv("PREPARE_ANNOTATIONS_PARQUET_WORKERS")
+        if env_value:
+            return max(1, int(env_value))
+        # Since it's CPU-bound but Polars is multi-threaded, we don't want too many concurrent files
+        # Default to 2 when no explicit value or env override is available
+        return 2
+
+    def get_threads(self) -> int:
+        """Get thread count per conversion, using auto-detection if not explicitly set."""
+        if self.threads:
+            return self.threads
+        cpu_count = psutil.cpu_count(logical=True) or 4
+        # If we run 2 concurrent conversions, we can give each ~50% of CPUs
+        # But Polars is good at sharing threads, so 0.75 of total is often fine too
+        # as they won't both be at 100% all the time.
+        return max(2, min(int(cpu_count * 0.5), 16))
 
 
 class HuggingFaceUploadConfig(Config):
@@ -79,3 +103,42 @@ class DuckDBConfig(Config):
             return self.threads
         cpu_count = psutil.cpu_count(logical=True) or 4
         return max(2, min(int(cpu_count * 0.75), 16))
+
+
+class EnsemblSourceConfig(Config):
+    """Configuration for Ensembl variation data source."""
+    
+    # Path to local Ensembl cache. If None, tries default cache location.
+    local_cache_path: Optional[str] = None
+    # HuggingFace dataset repo for Ensembl data
+    hf_repo: str = "just-dna-seq/ensembl_variations"
+    # Species for file pattern matching
+    species: str = "homo_sapiens"
+    # If True, prefer local cache over HuggingFace
+    prefer_local: bool = True
+
+
+class LongevityMapConfig(Config):
+    """Configuration for LongevityMap module conversion."""
+    
+    # Path to module SQLite database. If None, uses default location.
+    db_path: Optional[str] = None
+    # Module name in output
+    module_name: str = "longevitymap"
+    # Curator name
+    curator: str = "Olga Borysova"
+    # Curation method
+    method: str = "literature_review"
+    # Output directory. If None, uses default modules output.
+    output_dir: Optional[str] = None
+
+
+class AnnotatorsUploadConfig(Config):
+    """Configuration for uploading annotator modules to HuggingFace Hub."""
+    
+    # HuggingFace repository ID for annotators
+    repo_id: str = "just-dna-seq/annotators"
+    # HuggingFace API token. Uses HF_TOKEN env var if None.
+    token: Optional[str] = None
+    # Path prefix in the repo (module folders go under this)
+    path_prefix: str = "data"

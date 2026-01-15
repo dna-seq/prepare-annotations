@@ -13,11 +13,12 @@ import polars as pl
 from pathlib import Path
 
 from conftest import ensure_oakvar_module_data
+from prepare_annotations.resources import MODULES_DIR, MODULES_OUTPUT_DIR
 
 
 # Paths to data files
-TSV_PATH = Path("data/modules/just_drugs/annotation_tab.tsv")
-PARQUET_DIR = Path("data/output/modules/drugs")
+TSV_PATH = MODULES_DIR / "just_drugs" / "annotation_tab.tsv"
+PARQUET_DIR = MODULES_OUTPUT_DIR / "drugs"
 
 
 @pytest.fixture(scope="module")

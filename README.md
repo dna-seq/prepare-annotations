@@ -4,15 +4,14 @@ A dedicated toolkit for downloading, processing, and preparing genomic annotatio
 
 ## Features
 
-- **Prefect-based Pipelines**: robust workflows for data preparation.
+- **Dagster-based Pipelines (Primary)**: Software-Defined Assets (SDA) with full lineage tracking, parallel execution, and automated Hugging Face uploads.
 - **Support for multiple sources**:
   - **Ensembl**: Human genetic variations.
   - **ClinVar**: Clinical variant data.
   - **dbSNP**: Single Nucleotide Polymorphism database.
   - **gnomAD**: Genome Aggregation Database.
 - **OakVar Module Management**: Download and convert data from [dna-seq](https://github.com/orgs/dna-seq/repositories) OakVar modules.
-- **VCF to Parquet**: Efficient conversion of large VCF files to columnar format.
-- **Variant Splitting**: Splitting variants by type (SNV, Indel, etc.) for optimized annotation.
+- **VCF to Parquet**: Efficient conversion of large VCF files to columnar format using `polars-bio`.
 - **Hugging Face Hub Integration**: Direct upload of processed datasets with automatic dataset card generation.
 
 ## Installation
@@ -27,33 +26,32 @@ uv sync
 
 ## Usage
 
-### Main Genomic Data Pipeline
+### 🔷 Dagster Pipelines
 
-The `prepare-annotations` command handles large-scale genomic data downloads and processing.
+The primary way to run pipelines is using Dagster. This provides parallel execution, resumable downloads, and integrated Hugging Face uploads.
+
+#### Ensembl Pipeline
 
 ```bash
-# Show version
-uv run prepare-annotations version
+# Run the full pipeline (download → convert → upload)
+uv run dagster-ensembl
 
-# Download and process Ensembl variations
-uv run prepare-annotations ensembl --split --upload
+# Start the Dagster UI for monitoring and interactive execution
+uv run dagster-ensembl ui
 
-# Download and process ClinVar data
-uv run prepare-annotations clinvar --split --upload
-
-# Download and process dbSNP data
-uv run prepare-annotations dbsnp --build GRCh38 --split
-
-# Download and process gnomAD data
-uv run prepare-annotations gnomad --version v4 --split
+# Run for a specific species
+uv run dagster-ensembl run --species mus_musculus
 ```
 
-#### Main Pipeline Options
+#### Other Dagster Commands
 
-- `--dest-dir`: Destination directory for downloads.
-- `--split`: Split downloaded files by variant type.
-- `--upload`: Upload results to Hugging Face Hub.
-- `--repo-id`: Custom Hugging Face repository ID.
+```bash
+# List all available assets
+uv run dagster-ui assets
+
+# Materialize specific assets
+uv run dagster-ui materialize ensembl_vcf_urls
+```
 
 ### OakVar Module Management
 

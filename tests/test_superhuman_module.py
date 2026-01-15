@@ -16,11 +16,12 @@ import sqlite3
 from pathlib import Path
 
 from conftest import ensure_oakvar_module_data
+from prepare_annotations.resources import MODULES_DIR, MODULES_OUTPUT_DIR
 
 
 # Paths to data files
-SQLITE_PATH = Path("data/modules/just_superhuman/superhuman.sqlite")
-PARQUET_DIR = Path("data/output/modules/superhuman")
+SQLITE_PATH = MODULES_DIR / "just_superhuman" / "superhuman.sqlite"
+PARQUET_DIR = MODULES_OUTPUT_DIR / "superhuman"
 
 
 @pytest.fixture(scope="module")

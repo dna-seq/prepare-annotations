@@ -35,3 +35,4 @@ uv.lock
 .vscode/
 .idea/
 .cursor/
+.dagster_home

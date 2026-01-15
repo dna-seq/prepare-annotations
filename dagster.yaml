@@ -1,0 +1,27 @@
+# Dagster instance configuration for prepare-annotations
+#
+# Concurrency Control:
+#   Uses tag-based concurrency limits via run_coordinator to prevent
+#   too many memory-intensive operations running in parallel.
+#
+# See: https://docs.dagster.io/deployment/dagster-instance
+
+# Run coordinator with tag-based concurrency limits
+run_coordinator:
+  module: dagster.core.run_coordinator
+  class: QueuedRunCoordinator
+  config:
+    tag_concurrency_limits:
+      # Limit concurrent VCF downloads (I/O bound)
+      - key: "dagster/concurrency_key"
+        value: "ensembl_vcf_download"
+        limit: 4
+      # Limit concurrent parquet conversions (CPU/memory intensive)
+      - key: "dagster/concurrency_key"
+        value: "ensembl_parquet_conversion"
+        limit: 2
+
+# Unified storage configuration (SQLite for local development)
+storage:
+  sqlite:
+    base_dir: .dagster_home

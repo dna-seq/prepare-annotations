@@ -1,4 +1,14 @@
-from prepare_annotations.convert_modules.common import convert_longevitymap_data
+from prepare_annotations.convert_modules.common import (
+    load_weights_raw,
+    load_variants_raw,
+    expand_homozygous_genotypes,
+    expand_heterozygous_spec_genotypes,
+    expand_heterozygous_with_ensembl,
+    expand_all_genotypes_with_ensembl,
+    scan_ensembl_variations,
+    get_ensembl_for_genotype_resolution,
+    convert_module_weights_with_ensembl,
+)
 from prepare_annotations.convert_modules.genotypes import (
     genotype_has_placeholder,
     resolve_genotype_placeholders_with_ensembl,
@@ -44,12 +54,21 @@ from prepare_annotations.convert_modules.drugs import (
 )
 
 __all__ = [
+    # Common utilities for module conversion
+    "load_weights_raw",
+    "load_variants_raw",
+    "expand_homozygous_genotypes",
+    "expand_heterozygous_spec_genotypes",
+    "expand_heterozygous_with_ensembl",
+    "expand_all_genotypes_with_ensembl",
+    "scan_ensembl_variations",
+    "get_ensembl_for_genotype_resolution",
+    "convert_module_weights_with_ensembl",
     # Genotypes / Ensembl join helpers
     "genotype_has_placeholder",
     "resolve_genotype_placeholders_with_ensembl",
     "select_ensembl_minimal",
     # Longevitymap
-    "convert_longevitymap_data",
     "convert_longevitymap",
     "convert_longevitymap_annotations",
     "convert_longevitymap_studies",

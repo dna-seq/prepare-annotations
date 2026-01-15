@@ -10,8 +10,8 @@ import shutil
 import os
 from pathlib import Path
 import pooch
+from prepare_annotations.resources import MODULES_DIR
 from pycomfort.logging import to_nice_stdout
-from prefect.testing.utilities import prefect_test_harness
 
 
 # =============================================================================
@@ -65,7 +65,7 @@ def download_oakvar_module_data(
     repo = OAKVAR_MODULE_REPOS[module_name]
     
     if output_dir is None:
-        output_dir = Path("data/modules") / module_name
+        output_dir = MODULES_DIR / module_name
     
     output_dir.parent.mkdir(parents=True, exist_ok=True)
     
@@ -107,7 +107,7 @@ def ensure_oakvar_module_data(
         Path to the output directory
     """
     if output_dir is None:
-        output_dir = Path("data/modules") / module_name
+        output_dir = MODULES_DIR / module_name
     
     # Check if data already exists
     needs_download = False
@@ -122,13 +122,6 @@ def ensure_oakvar_module_data(
         download_oakvar_module_data(module_name, output_dir)
     
     return output_dir
-
-
-@pytest.fixture(scope="session", autouse=True)
-def prefect_test_fixture():
-    """Ensure Prefect is running in a test harness to avoid I/O errors and state leakage."""
-    with prefect_test_harness():
-        yield
 
 
 def pytest_addoption(parser):

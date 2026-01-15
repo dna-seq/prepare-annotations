@@ -10,7 +10,7 @@ from typing import Any
 
 from dagster import IOManager, io_manager, InputContext, OutputContext
 
-from prepare_annotations.pipelines_dagster.resources import (
+from prepare_annotations.pipelines.resources import (
     get_cache_dir,
     get_default_ensembl_cache_dir,
     get_output_dir,
@@ -39,9 +39,14 @@ class EnsemblCacheIOManager(IOManager):
         
         if asset_key == "ensembl_vcf_urls":
             return base / "vcf_urls.json"
-        elif asset_key == "ensembl_vcf_files":
+        elif asset_key == "ensembl_vcf_file":
+            # Partitioned asset - path is per-file in vcf/
             return base / "vcf"
-        elif asset_key == "ensembl_parquet_files":
+        elif asset_key == "ensembl_parquet_file":
+            # Partitioned asset - parquet files in species_dir
+            return base
+        elif asset_key == "ensembl_all_parquet_files":
+            # Collector asset - species directory containing all parquet files
             return base
         
         return base / asset_key

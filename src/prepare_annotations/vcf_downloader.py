@@ -18,7 +18,7 @@ from platformdirs import user_cache_dir
 from tenacity import Retrying, retry_if_exception, stop_after_attempt, wait_exponential
 
 
-from prepare_annotations.paths import get_cache_dir
+from prepare_annotations.resources import get_cache_dir
 from prepare_annotations.io import AnnotatedLazyFrame, vcf_to_parquet
 
 RETRYABLE_STATUS = {408, 429, 500, 502, 503, 504}
@@ -664,6 +664,7 @@ def convert_to_parquet(
     compression: str = "zstd",
     compression_level: Optional[int] = None,
     alts_list: bool = True,
+    thread_num: Optional[int] = None,
 ) -> AnnotatedLazyFrame:
     """Convert a VCF file to Parquet using io utilities.
 
@@ -697,6 +698,7 @@ def convert_to_parquet(
             compression=compression,
             compression_level=compression_level,
             alts_list=alts_list,
+            thread_num=thread_num,
         )
         action.log(
             message_type="info",

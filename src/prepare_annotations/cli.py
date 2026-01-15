@@ -27,7 +27,7 @@ from prepare_annotations.dataset_card_generator import (
 from huggingface_hub import HfApi
 
 from prepare_annotations.runtime import load_env
-from prepare_annotations.paths import LOGS_DIR, get_default_input_dir, get_default_output_dir
+from prepare_annotations.resources import LOGS_DIR, get_default_input_dir, get_default_output_dir
 
 logs = LOGS_DIR
 
@@ -78,14 +78,9 @@ def run_pipeline(
         to_nice_file(logs / f"prepare_{name}.json", logs / f"prepare_{name}.log")
         to_nice_stdout()
 
-    # Show Prefect UI information upfront
-    from prepare_annotations.runtime import setup_prefect_api
-    is_server, ui_url = setup_prefect_api()
-    console.print(f"\n[bold cyan]🌊 Prefect UI:[/bold cyan] [link={ui_url}]{ui_url}[/link]")
-    if not is_server:
-        console.print("[yellow]💡 Tip: Run 'prefect server start' in another terminal to access the UI[/yellow]\n")
-    else:
-        console.print("[green]✅ Connected to Prefect server[/green]\n")
+    # Show Dagster UI information upfront
+    console.print(f"\n[bold cyan]🔷 Dagster UI:[/bold cyan] [link=http://127.0.0.1:3000]http://127.0.0.1:3000[/link]")
+    console.print("[yellow]💡 Tip: Run 'dagster-ui' or 'prepare dagster ui' to start the UI[/yellow]\n")
 
     with start_action(action_type=f"prepare_{name}_command") as action:
         action.log(
@@ -120,7 +115,6 @@ def run_pipeline(
             progress.update(task_id, description="✅ Pipeline completed")
             
         console.print("\n✅ Pipeline execution completed!")
-        console.print(f"[dim]View details at: {ui_url}[/dim]")
         
         if results.vcf_parquet_path:
             console.print(f"📦 Converted {len(results.vcf_parquet_path)} parquet files")
@@ -164,149 +158,174 @@ def run_pipeline(
 
 @app.command()
 def ensembl(
+    job: str = typer.Option(
+        "full",
+        "--job", "-j",
+        help="Job name: full (default), prepare, download, convert, upload"
+    ),
     species: str = typer.Option(
         "homo_sapiens",
         "--species",
         help="Species name to download (e.g., homo_sapiens, mus_musculus). Default: homo_sapiens"
     ),
-    dest_dir: Optional[str] = typer.Option(
-        None,
-        "--dest-dir",
-        help="Base destination directory. If not specified, uses standard cache directory with species subfolder."
-    ),
-    vcf_dir: Optional[str] = typer.Option(
-        None,
-        "--vcf-dir",
-        help="Optional specific directory for VCF downloads. Defaults to <dest_dir>/<species>/vcf"
-    ),
-    parquet_dir: Optional[str] = typer.Option(
-        None,
-        "--parquet-dir",
-        help="Optional specific directory for Parquet files. Defaults to <dest_dir>/<species> (root of species folder)"
-    ),
-    split: bool = typer.Option(
-        False,
-        "--split/--no-split",
-        help="Split downloaded parquet files by variant type (TSA)"
-    ),
-    explode_snv_alt: bool = typer.Option(
-        False,
-        "--explode-snv-alt/--no-explode-snv-alt",
-        help="Explode ALT column for SNV variants during splitting"
-    ),
-    alts_list: bool = typer.Option(
-        True,
-        "--alts-list/--no-alts-list",
-        help="Add a list of alternative alleles as 'alts' column"
-    ),
-    log: bool = typer.Option(
-        True,
-        "--log/--no-log",
-        help="Enable detailed logging to files"
-    ),
-    pattern: Optional[str] = typer.Option(
-        None,
-        "--pattern",
-        help="Regex pattern to filter files. Examples: 'chr(21|22)' for chr21&22, 'chr2[12]' for chr21&22, 'chr(X|Y)' for sex chromosomes. Default: all chromosomes"
-    ),
-    url: Optional[str] = typer.Option(
-        None,
-        "--url",
-        help="Base URL for Ensembl data (default: https://ftp.ensembl.org/pub/current_variation/vcf/homo_sapiens/)"
-    ),
-    upload: bool = typer.Option(
-        False,
-        "--upload/--no-upload",
-        help="Upload parquet files to Hugging Face Hub after processing"
-    ),
-    repo_id: str = typer.Option(
-        "just-dna-seq/ensembl_variations",
-        "--repo-id",
-        help="Hugging Face repository ID for upload"
-    ),
-    token: Optional[str] = typer.Option(
-        None,
-        "--token",
-        help="Hugging Face API token (uses HF_TOKEN env var if not provided)"
-    ),
-    profile: bool = typer.Option(
-        True,
-        "--profile/--no-profile",
-        help="Track and display resource usage (time and memory)"
-    ),
-    http_max_pool: Optional[int] = typer.Option(
-        None,
-        "--http-max-pool",
-        help="HTTP connection pool size (for API consistency; actual pooling managed by fsspec). Mainly useful for timeout and retry tuning."
-    ),
-    http_chunk_size: Optional[int] = typer.Option(
-        None,
-        "--http-chunk-size",
-        help="HTTP chunk size in bytes for reading data. Larger values may improve throughput."
-    ),
-    connect_timeout: Optional[float] = typer.Option(
-        None,
-        "--connect-timeout",
-        help="Connection timeout in seconds (default: 10). Increase for slow/unreliable networks."
-    ),
-    sock_read_timeout: Optional[float] = typer.Option(
-        None,
-        "--sock-read-timeout",
-        help="Socket read timeout in seconds (default: 120). Increase for very large files or slow connections."
-    ),
-    retries: Optional[int] = typer.Option(
-        None,
-        "--retries",
-        help="Number of retry attempts for failed downloads (default: 10). Increase for unreliable networks."
-    ),
-    verify_checksums: bool = typer.Option(
-        True,
-        "--verify-checksums/--no-verify-checksums",
-        help="Verify file checksums after download using CHECKSUMS file from source. Detects and re-downloads corrupted files."
-    ),
 ):
     """
-    Download Ensembl variation VCF files and convert them to Parquet format.
+    Run Ensembl pipeline using Dagster (default: full pipeline with upload).
     
-    This command downloads VCF files from Ensembl, converts them to Parquet,
-    and optionally splits them by variant type (SNV, insertion, deletion, etc.).
+    Jobs: full (default), prepare, download, convert, upload
     
-    Performance tuning options:
-    - Use --http-chunk-size to optimize chunk size for your network
-    - Adjust --connect-timeout and --sock-read-timeout for network conditions
-    - Increase --retries for unreliable connections
-    
-    Note: HTTP connection pooling is managed automatically by fsspec/aiohttp.
-    The --http-max-pool parameter is kept for API consistency but has limited effect.
-    
-    Environment variables:
-    - PREPARE_ANNOTATIONS_DOWNLOAD_TIMEOUT: Override default total timeout
+    Starts Dagster UI in background for monitoring.
     """
-    # run the pipeline
-    run_pipeline(
-        name="ensembl",
-        pipeline_func=PreparationPipelines.download_ensembl,
-        log=log,
-        upload=upload,
-        repo_id=repo_id,
-        token=token,
-        dest_dir=dest_dir,
-        vcf_dir=vcf_dir,
-        parquet_dir=parquet_dir,
-        split=split,
-        explode_snv_alt=explode_snv_alt,
-        alts_list=alts_list,
-        species=species,
-        pattern=pattern,
-        url=url,
-        http_max_pool=http_max_pool,
-        http_chunk_size=http_chunk_size,
-        connect_timeout=connect_timeout,
-        sock_read_timeout=sock_read_timeout,
-        retries=retries,
-        verify_checksums=verify_checksums,
-        profile=profile
+    _dagster_run_ensembl(job_name=job, species=species)
+
+
+def _dagster_run_ensembl(
+    job_name: str = "full",
+    species: str = "homo_sapiens",
+):
+    """
+    Run Ensembl Dagster pipeline using the Python API.
+    
+    For partitioned assets, this:
+    1. Materializes ensembl_vcf_urls (discovers files, registers partitions)
+    2. Runs backfill for all partitions of ensembl_vcf_file and ensembl_parquet_file
+    3. Materializes the collector and upload assets
+    """
+    import os
+    from dagster import DagsterInstance, materialize
+    
+    # Set up DAGSTER_HOME
+    dagster_home = _get_dagster_home()
+    _ensure_dagster_config(dagster_home)
+    os.environ["DAGSTER_HOME"] = str(dagster_home)
+    
+    console.print(f"\n[bold cyan]🔷 Running Dagster Pipeline: {job_name}[/bold cyan]")
+    console.print(f"   Species: [bold blue]{species}[/bold blue]")
+    console.print(f"   Dagster home: {dagster_home}")
+    
+    # Start UI in background if not running
+    _ensure_dagster_ui_running(force_restart=True)
+    
+    console.print("\n🚀 Executing pipeline using Dagster Python API...\n")
+    console.print("   Monitor progress at: http://127.0.0.1:3000\n")
+
+    # Import assets and definitions
+    from prepare_annotations.pipelines.ensembl_assets import (
+        ensembl_ftp_source,
+        ensembl_vcf_urls,
+        ensembl_vcf_file,
+        ensembl_parquet_file,
+        ensembl_all_parquet_files,
+        ensembl_hf_upload,
+        ENSEMBL_VCF_PARTITIONS,
     )
+    from prepare_annotations.pipelines.io_managers import (
+        ensembl_cache_io_manager,
+        huggingface_upload_io_manager,
+    )
+    
+    instance = DagsterInstance.get()
+    
+    resources = {
+        "io_manager": ensembl_cache_io_manager,
+        "hf_upload_io_manager": huggingface_upload_io_manager,
+    }
+    
+    def _run_config_for_assets(asset_names: list[str]) -> dict:
+        config: dict[str, dict] = {"ops": {}}
+        for asset_name in asset_names:
+            config["ops"][asset_name] = {"config": {"species": species}}
+        return config
+
+    all_assets = [
+        ensembl_vcf_urls,
+        ensembl_vcf_file,
+        ensembl_parquet_file,
+        ensembl_all_parquet_files,
+        ensembl_hf_upload,
+    ]
+    
+    # Step 1: Materialize ensembl_vcf_urls (discovers files, registers partitions)
+    console.print("[bold]Step 1:[/bold] Discovering VCF files from Ensembl FTP...")
+    result = materialize(
+        assets=all_assets,
+        selection=["ensembl_vcf_urls"],
+        resources=resources,
+        run_config=_run_config_for_assets(["ensembl_vcf_urls"]),
+        instance=instance,
+    )
+    if not result.success:
+        console.print("[bold red]❌ Failed to discover VCF URLs![/bold red]")
+        raise typer.Exit(1)
+    console.print("[green]✓ VCF URLs discovered[/green]")
+    
+    # Get registered partitions
+    partition_keys = list(instance.get_dynamic_partitions(ENSEMBL_VCF_PARTITIONS.name))
+    console.print(f"   Found [bold]{len(partition_keys)}[/bold] partitions")
+    
+    if job_name in ("download", "prepare", "full"):
+        # Step 2: Download VCF files (partitioned)
+        console.print(f"\n[bold]Step 2:[/bold] Downloading {len(partition_keys)} VCF files...")
+        for i, partition_key in enumerate(partition_keys, 1):
+            console.print(f"   [{i}/{len(partition_keys)}] {partition_key}...")
+            result = materialize(
+                assets=all_assets,
+                selection=["ensembl_vcf_file"],
+                resources=resources,
+                run_config=_run_config_for_assets(["ensembl_vcf_file"]),
+                instance=instance,
+                partition_key=partition_key,
+            )
+            if not result.success:
+                console.print(f"[bold red]❌ Failed to download {partition_key}![/bold red]")
+                raise typer.Exit(1)
+        console.print("[green]✓ All VCF files downloaded[/green]")
+    
+    if job_name in ("convert", "prepare", "full"):
+        # Step 3: Convert to Parquet (partitioned)
+        console.print(f"\n[bold]Step 3:[/bold] Converting {len(partition_keys)} VCF files to Parquet...")
+        for i, partition_key in enumerate(partition_keys, 1):
+            console.print(f"   [{i}/{len(partition_keys)}] {partition_key}...")
+            result = materialize(
+                assets=all_assets,
+                selection=["ensembl_parquet_file"],
+                resources=resources,
+                run_config=_run_config_for_assets(["ensembl_parquet_file"]),
+                instance=instance,
+                partition_key=partition_key,
+            )
+            if not result.success:
+                console.print(f"[bold red]❌ Failed to convert {partition_key}![/bold red]")
+                raise typer.Exit(1)
+        console.print("[green]✓ All files converted to Parquet[/green]")
+    
+    if job_name in ("upload", "full"):
+        # Step 4: Collect and upload
+        console.print("\n[bold]Step 4:[/bold] Collecting parquet files...")
+        result = materialize(
+            assets=all_assets,
+            selection=["ensembl_all_parquet_files"],
+            resources=resources,
+            instance=instance,
+        )
+        if not result.success:
+            console.print("[bold red]❌ Failed to collect parquet files![/bold red]")
+            raise typer.Exit(1)
+        console.print("[green]✓ Parquet files collected[/green]")
+        
+        console.print("\n[bold]Step 5:[/bold] Uploading to HuggingFace Hub...")
+        result = materialize(
+            assets=all_assets,
+            selection=["ensembl_hf_upload"],
+            resources=resources,
+            instance=instance,
+        )
+        if not result.success:
+            console.print("[bold red]❌ Failed to upload to HuggingFace![/bold red]")
+            raise typer.Exit(1)
+        console.print("[green]✓ Upload complete[/green]")
+    
+    console.print(f"\n[bold green]✅ Pipeline '{job_name}' completed successfully![/bold green]")
 
 
 @app.command()
@@ -333,10 +352,6 @@ def split(
         to_nice_file(logs / "split_parquets.json", logs / "split_parquets.log")
         to_nice_stdout()
         
-    from prepare_annotations.runtime import setup_prefect_api
-    _, ui_url = setup_prefect_api()
-    console.print(f"\n[bold cyan]🌊 Prefect UI:[/bold cyan] [link={ui_url}]{ui_url}[/link]")
-    
     with start_action(action_type="split_command", num_files=len(parquet_files)) as action:
         console.print(f"🚀 Splitting {len(parquet_files)} parquet files...")
         
@@ -345,7 +360,6 @@ def split(
             explode_snv_alt=explode_snv_alt,
             write_to=Path(output_dir) if output_dir else None,
             log=log,
-            profile=profile
         )
         
         console.print(f"\n✅ Splitting completed!")
@@ -416,15 +430,9 @@ def index_rsids(
         to_nice_file(logs / "ensembl_rsid_coords.json", logs / "ensembl_rsid_coords.log")
         to_nice_stdout()
     
-    # Show Prefect UI information
-    from prepare_annotations.runtime import setup_prefect_api
-    is_server, ui_url = setup_prefect_api()
-    console.print(f"\n[bold cyan]🌊 Prefect UI:[/bold cyan] [link={ui_url}]{ui_url}[/link]")
-    if not is_server:
-        console.print("[yellow]💡 Tip: Run 'prefect server start' in another terminal to access the UI[/yellow]\n")
-    else:
-        console.print("[green]✅ Connected to Prefect server[/green]\n")
-        
+    # Show Dagster UI information
+    console.print(f"\n[bold cyan]🔷 Dagster UI:[/bold cyan] [link=http://127.0.0.1:3000]http://127.0.0.1:3000[/link]")
+    
     with start_action(action_type="ensembl_rsid_coords_command") as action:
         console.print("🚀 Starting rsID coordinate computation...")
         
@@ -437,11 +445,9 @@ def index_rsids(
             force=force,
             compression_level=compression_level,
             log=log,
-            profile=profile,
         )
         
         console.print(f"\n✅ Computation completed!")
-        console.print(f"[dim]View details at: {ui_url}[/dim]")
         console.print(f"📦 Output: [bold cyan]{results.output_path}[/bold cyan]")
         console.print(f"📊 Count: [bold]{results.count}[/bold]")
         
@@ -1199,145 +1205,13 @@ def update_card(
 
 
 
-@app.command()
-def longevitymap(
-    db_path: Optional[str] = typer.Option(
-        None,
-        "--db-path",
-        help="Path to longevitymap SQLite database. Defaults to data/modules/just_longevitymap/longevitymap.sqlite"
-    ),
-    output_path: Optional[str] = typer.Option(
-        None,
-        "--output-path",
-        help="Output path for the parquet file. Defaults to data/output/modules/longevitymap_annotations.parquet"
-    ),
-    ensembl_cache: Optional[str] = typer.Option(
-        None,
-        "--ensembl-cache",
-        help="Path to Ensembl cache directory. If not provided, will try standard cache location."
-    ),
-    use_cache: bool = typer.Option(
-        True,
-        "--use-cache/--no-cache",
-        help="Use Ensembl cache for joining genome data (adds chromosome, position, etc.)"
-    ),
-    log: bool = typer.Option(
-        True,
-        "--log/--no-log",
-        help="Enable detailed logging to files"
-    ),
-):
-    """
-    Convert LongevityMap OakVar module data to annotated parquet format.
-    
-    This command:
-    1. Reads the LongevityMap SQLite database
-    2. Extracts allele weights, variants, and population data
-    3. Optionally joins with Ensembl genome data (adds chromosome, position, ref, alts)
-    4. Saves the result as a parquet file
-    """
-    from prepare_annotations.convert_modules.common import convert_longevitymap_data
-    from prepare_annotations.paths import get_cache_dir
-    
-    if log:
-        logs.mkdir(exist_ok=True, parents=True)
-        to_nice_file(logs / "prepare_longevitymap.json", logs / "prepare_longevitymap.log")
-        to_nice_stdout()
-    
-    with start_action(action_type="prepare_longevitymap_command") as action:
-        # Determine paths
-        if db_path is None:
-            db_path_resolved = Path("data/modules/just_longevitymap/longevitymap.sqlite")
-        else:
-            db_path_resolved = Path(db_path)
-        
-        if output_path is None:
-            output_path_resolved = Path("data/output/modules/longevitymap_annotations.parquet")
-        else:
-            output_path_resolved = Path(output_path)
-        
-        # Determine ensembl cache
-        ensembl_cache_resolved: Optional[Path] = None
-        if use_cache:
-            if ensembl_cache is None:
-                # Try standard cache location
-                cache = get_cache_dir()
-                ensembl_cache_resolved = cache / "ensembl" / "homo_sapiens"
-            else:
-                ensembl_cache_resolved = Path(ensembl_cache)
-        
-        action.log(
-            message_type="info",
-            db_path=str(db_path_resolved),
-            output_path=str(output_path_resolved),
-            ensembl_cache=str(ensembl_cache_resolved) if ensembl_cache_resolved else None,
-            use_cache=use_cache,
-        )
-        
-        # Check if db exists
-        if not db_path_resolved.exists():
-            console.print(f"[bold red]Error:[/bold red] Database not found: {db_path_resolved}")
-            raise typer.Exit(1)
-        
-        console.print(f"📁 Database: [bold blue]{db_path_resolved}[/bold blue]")
-        console.print(f"📦 Output: [bold blue]{output_path_resolved}[/bold blue]")
-        
-        if use_cache and ensembl_cache_resolved:
-            console.print(f"🧬 Ensembl cache: [bold blue]{ensembl_cache_resolved}[/bold blue]")
-        else:
-            console.print("[yellow]⚠️  Ensembl cache disabled - output will not include genome coordinates[/yellow]")
-        
-        console.print("\n🚀 Starting conversion...")
-        
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            console=console,
-            transient=True
-        ) as progress:
-            task_id = progress.add_task("Converting LongevityMap data...", total=None)
-            
-            # Convert the data
-            result_lf = convert_longevitymap_data(
-                db_path=db_path_resolved,
-                ensembl_cache=ensembl_cache_resolved,
-            )
-            
-            # Collect and save
-            progress.update(task_id, description="Collecting and writing parquet...")
-            output_path_resolved.parent.mkdir(parents=True, exist_ok=True)
-            result_lf.collect().write_parquet(
-                output_path_resolved,
-                compression="zstd",
-                compression_level=14,
-            )
-            
-            progress.update(task_id, description="✅ Conversion completed")
-        
-        # Get file size
-        file_size_mb = output_path_resolved.stat().st_size / (1024 ** 2)
-        
-        console.print(f"\n✅ Conversion completed!")
-        console.print(f"📦 Output file: [bold cyan]{output_path_resolved}[/bold cyan]")
-        console.print(f"💾 File size: [bold]{file_size_mb:.2f} MB[/bold]")
-        
-        action.log(
-            message_type="success",
-            output_path=str(output_path_resolved),
-            file_size_mb=file_size_mb,
-        )
-
-
 # ============================================================================
 # DAGSTER COMMANDS
 # ============================================================================
 
-dagster_app = typer.Typer(
-    name="dagster",
-    help="Dagster-based pipelines (alternative to Prefect)",
-    no_args_is_help=True
-)
-app.add_typer(dagster_app, name="dagster")
+# ============================================================================
+# DAGSTER INTEGRATION
+# ============================================================================
 
 
 def _get_dagster_home() -> Path:
@@ -1356,44 +1230,13 @@ def _get_dagster_home() -> Path:
             p = (root / p).resolve()
         return p
 
-    # Import at call-time so tests (and callers) can override paths.ROOT_DIR if needed.
-    from prepare_annotations import paths as _paths
+    # Import at call-time so tests (and callers) can override resources.ROOT_DIR if needed.
+    from prepare_annotations import resources as _resources
 
-    dagster_home_path = _resolve_dagster_home(_paths.ROOT_DIR, os.environ.get("DAGSTER_HOME"))
+    dagster_home_path = _resolve_dagster_home(_resources.ROOT_DIR, os.environ.get("DAGSTER_HOME"))
     dagster_home_path.mkdir(parents=True, exist_ok=True)
     os.environ["DAGSTER_HOME"] = str(dagster_home_path)
     return dagster_home_path
-
-
-def dagster_ui_entry() -> None:
-    """Standalone entrypoint (console script) that starts Dagster UI with our DAGSTER_HOME.
-
-    This is intentionally NOT a Typer command: console_scripts call functions directly,
-    and Typer-style defaults (typer.Option(...)) are not valid when invoked that way.
-    """
-    import sys
-    import subprocess
-
-    dagster_home = _get_dagster_home()
-    _ensure_dagster_config(dagster_home)
-
-    # Run Dagster in the foreground (like `uv run dagster-ui` in just-dna-lite).
-    env = os.environ.copy()
-    env["DAGSTER_HOME"] = str(dagster_home)
-
-    cmd = [
-        sys.executable,
-        "-m",
-        "dagster",
-        "dev",
-        "-m",
-        "prepare_annotations.pipelines_dagster",
-        "-p",
-        "3000",
-        "-h",
-        "127.0.0.1",
-    ]
-    subprocess.run(cmd, env=env, check=False)
 
 
 def _kill_port_owner(port: int, host: str = "127.0.0.1") -> None:
@@ -1472,7 +1315,7 @@ def _start_dagster_ui_background(port: int = 3000, host: str = "127.0.0.1"):
     
     cmd = [
         sys.executable, "-m", "dagster", "dev",
-        "-m", "prepare_annotations.pipelines_dagster",
+        "-m", "prepare_annotations.pipelines",
         "-p", str(port),
         "-h", host,
     ]
@@ -1526,79 +1369,7 @@ def _ensure_dagster_ui_running(
     return True
 
 
-@dagster_app.command(name="run")
-def dagster_run_ensembl(
-    job_name: str = typer.Option(
-        "full",
-        "--job", "-j",
-        help="Job name: full, prepare, download, convert, upload"
-    ),
-    species: str = typer.Option(
-        "homo_sapiens",
-        "--species",
-        help="Species name"
-    ),
-):
-    """
-    Run Ensembl pipeline (default: full pipeline with upload).
-    
-    Jobs: full (default), prepare, download, convert, upload
-    
-    Starts Dagster UI in background for monitoring.
-    """
-    from dagster import DagsterInstance
-    
-    # Set up DAGSTER_HOME
-    dagster_home = _get_dagster_home()
-    _ensure_dagster_config(dagster_home)
-    
-    console.print(f"\n[bold cyan]🔷 Running Dagster Job: {job_name}[/bold cyan]")
-    console.print(f"   Species: [bold blue]{species}[/bold blue]")
-    console.print(f"   Dagster home: {dagster_home}")
-    
-    # Start UI in background if not running
-    _ensure_dagster_ui_running(force_restart=True)
-    
-    console.print("\n🚀 Executing pipeline...\n")
-    console.print("   Monitor progress at: http://127.0.0.1:3000\n")
-
-    # Import the job from definitions
-    from prepare_annotations.pipelines_dagster.definitions import defs
-    
-    # Get the job by name (using resolve_job_def for Dagster 1.11+)
-    try:
-        job = defs.resolve_job_def(job_name)
-    except Exception:
-        console.print(f"[bold red]❌ Job '{job_name}' not found![/bold red]")
-        console.print("Available jobs: full, prepare, download, convert, upload")
-        raise typer.Exit(1)
-    
-    # Execute the job with a persistent instance (visible in UI)
-    with DagsterInstance.get() as instance:
-        result = job.execute_in_process(
-            instance=instance,
-            run_config={
-                "ops": {
-                    "ensembl_vcf_urls": {"config": {"species": species}},
-                    "ensembl_vcf_files": {"config": {"species": species}},
-                }
-            },
-        )
-    
-    if result.success:
-        console.print(f"\n[bold green]✅ Job '{job_name}' completed successfully![/bold green]")
-    else:
-        console.print(f"\n[bold red]❌ Job '{job_name}' failed![/bold red]")
-        raise typer.Exit(1)
-
-
-@app.command(name="dagster-prepare")
-def top_level_dagster_prepare():
-    """Shortcut to run the full Ensembl Dagster pipeline with defaults."""
-    dagster_run_ensembl(job_name="full", species="homo_sapiens")
-
-
-@dagster_app.command(name="ui")
+@app.command(name="ui")
 def dagster_ui(
     port: int = typer.Option(3000, "--port", "-p", help="Port for Dagster webserver"),
     host: str = typer.Option("127.0.0.1", "--host", help="Host for Dagster webserver"),
@@ -1620,7 +1391,7 @@ def dagster_ui(
     
     cmd = [
         sys.executable, "-m", "dagster", "dev",
-        "-m", "prepare_annotations.pipelines_dagster",
+        "-m", "prepare_annotations.pipelines",
         "-p", str(port),
         "-h", host,
     ]
@@ -1628,68 +1399,163 @@ def dagster_ui(
     subprocess.run(cmd)
 
 
-@dagster_app.command(name="materialize")
+@app.command(name="materialize")
 def dagster_materialize(
     assets: List[str] = typer.Argument(
         ...,
-        help="Asset names to materialize (e.g., ensembl_vcf_urls ensembl_vcf_files)"
+        help="Asset names to materialize (e.g., ensembl_vcf_urls ensembl_vcf_file)"
+    ),
+    partition: Optional[str] = typer.Option(
+        None,
+        "--partition", "-p",
+        help="Partition key for partitioned assets"
     ),
 ):
     """
-    Materialize specific Dagster assets.
+    Materialize specific Dagster assets using the Python API.
     
     Examples:
         # Materialize VCF URL discovery
-        uv run prepare-annotations dagster materialize ensembl_vcf_urls
+        uv run prepare materialize ensembl_vcf_urls
         
-        # Materialize full pipeline
-        uv run prepare-annotations dagster materialize ensembl_vcf_urls ensembl_vcf_files ensembl_parquet_files
+        # Materialize a specific partition
+        uv run prepare materialize ensembl_vcf_file -p homo_sapiens.vcf.gz
     """
-    import subprocess
-    import sys
+    import os
+    from dagster import DagsterInstance, materialize
+    
+    dagster_home = _get_dagster_home()
+    _ensure_dagster_config(dagster_home)
+    os.environ["DAGSTER_HOME"] = str(dagster_home)
     
     console.print(f"\n[bold cyan]🔷 Materializing Assets[/bold cyan]")
     console.print(f"   Assets: {', '.join(assets)}")
+    if partition:
+        console.print(f"   Partition: {partition}")
     console.print()
     
-    cmd = [
-        sys.executable, "-m", "dagster", "asset", "materialize",
-        "-m", "prepare_annotations.pipelines_dagster.definitions",
-        "--select", *assets,
-    ]
+    # Import all assets to build the asset map
+    from prepare_annotations.pipelines.ensembl_assets import (
+        ensembl_ftp_source,
+        ensembl_vcf_urls,
+        ensembl_vcf_file,
+        ensembl_parquet_file,
+        ensembl_all_parquet_files,
+        ensembl_hf_upload,
+    )
+    from prepare_annotations.pipelines.module_assets import (
+        ensembl_variations_source,
+        longevitymap_annotations,
+        longevitymap_studies,
+        longevitymap_weights,
+        longevitymap_with_ensembl,
+        longevitymap_hf_upload,
+    )
+    from prepare_annotations.pipelines.io_managers import (
+        ensembl_cache_io_manager,
+        huggingface_upload_io_manager,
+    )
     
-    subprocess.run(cmd)
+    asset_map = {
+        "ensembl_vcf_urls": ensembl_vcf_urls,
+        "ensembl_vcf_file": ensembl_vcf_file,
+        "ensembl_parquet_file": ensembl_parquet_file,
+        "ensembl_all_parquet_files": ensembl_all_parquet_files,
+        "ensembl_hf_upload": ensembl_hf_upload,
+        "ensembl_variations_source": ensembl_variations_source,
+        "longevitymap_annotations": longevitymap_annotations,
+        "longevitymap_studies": longevitymap_studies,
+        "longevitymap_weights": longevitymap_weights,
+        "longevitymap_with_ensembl": longevitymap_with_ensembl,
+        "longevitymap_hf_upload": longevitymap_hf_upload,
+    }
+    
+    # Resolve asset objects
+    asset_objs = []
+    for asset_name in assets:
+        if asset_name not in asset_map:
+            console.print(f"[bold red]❌ Unknown asset: {asset_name}[/bold red]")
+            console.print(f"Available: {', '.join(asset_map.keys())}")
+            raise typer.Exit(1)
+        asset_objs.append(asset_map[asset_name])
+    
+    instance = DagsterInstance.get()
+    resources = {
+        "io_manager": ensembl_cache_io_manager,
+        "hf_upload_io_manager": huggingface_upload_io_manager,
+    }
+    
+    materialize_kwargs = {
+        "assets": list(asset_map.values()),
+        "selection": assets,
+        "resources": resources,
+        "instance": instance,
+    }
+    if partition:
+        materialize_kwargs["partition_key"] = partition
+    
+    result = materialize(**materialize_kwargs)
+    
+    if result.success:
+        console.print(f"\n[bold green]✅ Assets materialized successfully![/bold green]")
+    else:
+        console.print(f"\n[bold red]❌ Materialization failed![/bold red]")
+        raise typer.Exit(1)
 
 
-@dagster_app.command(name="job")
+@app.command(name="job")
 def dagster_job(
     job_name: str = typer.Argument(
         ...,
-        help="Job: full, prepare, download, convert, upload"
+        help="Job: full, prepare, download, convert, upload, longevitymap"
+    ),
+    species: str = typer.Option(
+        "homo_sapiens",
+        "--species", "-s",
+        help="Species for Ensembl jobs"
     ),
 ):
     """
-    Execute a Dagster job by name.
+    Execute a Dagster job by name using Python API.
     
-    Jobs: full, prepare, download, convert, upload
+    Ensembl jobs: full, prepare, download, convert, upload
+    Module jobs: longevitymap, longevitymap_full, longevitymap_upload
     """
-    import subprocess
-    import sys
+    ensembl_jobs = {"full", "prepare", "download", "convert", "upload"}
     
-    console.print(f"\n[bold cyan]🔷 Executing Job[/bold cyan]")
-    console.print(f"   Job: {job_name}")
-    console.print()
-    
-    cmd = [
-        sys.executable, "-m", "dagster", "job", "execute",
-        "-m", "prepare_annotations.pipelines_dagster.definitions",
-        "-j", job_name,
-    ]
-    
-    subprocess.run(cmd)
+    if job_name in ensembl_jobs:
+        # Use the proper partitioned asset handling
+        _dagster_run_ensembl(job_name=job_name, species=species)
+    else:
+        # For non-partitioned jobs, use execute_job
+        import os
+        from dagster import DagsterInstance, execute_job
+        
+        dagster_home = _get_dagster_home()
+        _ensure_dagster_config(dagster_home)
+        os.environ["DAGSTER_HOME"] = str(dagster_home)
+        
+        from prepare_annotations.pipelines.definitions import defs
+        
+        console.print(f"\n[bold cyan]🔷 Executing Job: {job_name}[/bold cyan]")
+        
+        job_def = defs.resolve_job_def(job_name)
+        instance = DagsterInstance.get()
+        
+        result = execute_job(
+            job_def,
+            instance=instance,
+            raise_on_error=False,
+        )
+        
+        if result.success:
+            console.print(f"\n[bold green]✅ Job '{job_name}' completed successfully![/bold green]")
+        else:
+            console.print(f"\n[bold red]❌ Job '{job_name}' failed![/bold red]")
+            raise typer.Exit(1)
 
 
-@dagster_app.command(name="assets")
+@app.command(name="assets")
 def dagster_list_assets():
     """List all available Dagster assets."""
     console.print("\n[bold cyan]🔷 Available Dagster Assets[/bold cyan]\n")
@@ -1697,8 +1563,9 @@ def dagster_list_assets():
     assets = [
         ("ensembl_ftp_source", "External", "Ensembl FTP server (source of truth)"),
         ("ensembl_vcf_urls", "Discovery", "Discovered VCF file URLs from Ensembl FTP"),
-        ("ensembl_vcf_files", "Download", "Downloaded VCF files from Ensembl"),
-        ("ensembl_parquet_files", "Conversion", "VCF files converted to Parquet"),
+        ("ensembl_vcf_file", "Download", "Per-file VCF download (dynamically partitioned)"),
+        ("ensembl_parquet_file", "Conversion", "Per-file VCF to Parquet conversion (dynamically partitioned)"),
+        ("ensembl_all_parquet_files", "Collector", "Collect all parquet files for upload"),
         ("ensembl_hf_upload", "Upload", "Upload to HuggingFace Hub"),
     ]
     
@@ -1708,23 +1575,147 @@ def dagster_list_assets():
         console.print()
 
 
-@dagster_app.command(name="jobs")
+@app.command(name="jobs")
 def dagster_list_jobs():
     """List all available Dagster jobs."""
     console.print("\n[bold cyan]🔷 Available Dagster Jobs[/bold cyan]\n")
     
     jobs = [
-        ("full", "Complete pipeline: download → convert → upload (default)"),
-        ("prepare", "Download and convert to Parquet (no splitting)"),
-        ("download", "Download VCF files from Ensembl FTP"),
-        ("convert", "Convert VCF to Parquet"),
-        ("upload", "Upload to HuggingFace Hub"),
+        ("full", "Complete Ensembl pipeline: download → convert → upload"),
+        ("prepare", "Ensembl: download and convert to Parquet (no splitting)"),
+        ("download", "Ensembl: download VCF files from FTP"),
+        ("convert", "Ensembl: convert VCF to Parquet"),
+        ("upload", "Ensembl: upload to HuggingFace Hub"),
+        ("longevitymap", "LongevityMap: convert to unified schema with Ensembl genotype resolution"),
+        ("longevitymap_full", "LongevityMap: convert + join with full Ensembl data"),
+        ("longevitymap_upload", "LongevityMap: convert + upload to just-dna-seq/annotators"),
     ]
     
     for name, description in jobs:
         console.print(f"  [bold green]{name}[/bold green]")
         console.print(f"      {description}")
         console.print()
+
+
+@app.command(name="longevitymap")
+def dagster_run_longevitymap(
+    db_path: Optional[str] = typer.Option(
+        None,
+        "--db-path",
+        help="Path to longevitymap SQLite database"
+    ),
+    output_dir: Optional[str] = typer.Option(
+        None,
+        "--output-dir",
+        help="Output directory for parquet files"
+    ),
+    ensembl_cache: Optional[str] = typer.Option(
+        None,
+        "--ensembl-cache",
+        help="Path to local Ensembl cache. If not found, downloads from HuggingFace."
+    ),
+    full: bool = typer.Option(
+        False,
+        "--full",
+        help="Run longevitymap_full job (includes Ensembl join)"
+    ),
+    upload: bool = typer.Option(
+        False,
+        "--upload",
+        help="Upload to HuggingFace Hub (just-dna-seq/annotators)"
+    ),
+):
+    """
+    Convert LongevityMap to unified annotation schema with proper genotype expansion.
+    
+    This uses the new Dagster-based conversion which:
+    - Expands homozygous variants: "C" -> ["C", "C"]
+    - Expands heterozygous variants with Ensembl: "C" (het) -> ["C", "T"], ["C", "G"], etc.
+    - Produces list[str] genotypes for parquet compatibility
+    
+    Ensembl data is sourced from:
+    1. Local cache (if available from prior Ensembl pipeline run)
+    2. HuggingFace Hub (just-dna-seq/ensembl_variations)
+    
+    Use --upload to upload results to just-dna-seq/annotators on HuggingFace.
+    """
+    from dagster import DagsterInstance
+    
+    dagster_home = _get_dagster_home()
+    _ensure_dagster_config(dagster_home)
+    
+    # Determine which job to run based on options
+    if upload:
+        job_name = "longevitymap_upload"
+    elif full:
+        job_name = "longevitymap_full"
+    else:
+        job_name = "longevitymap"
+    
+    console.print(f"\n[bold cyan]🔷 Running Dagster Job: {job_name}[/bold cyan]")
+    if db_path:
+        console.print(f"   Database: [bold blue]{db_path}[/bold blue]")
+    if output_dir:
+        console.print(f"   Output: [bold blue]{output_dir}[/bold blue]")
+    if ensembl_cache:
+        console.print(f"   Ensembl cache: [bold blue]{ensembl_cache}[/bold blue]")
+    console.print(f"   Dagster home: {dagster_home}")
+    
+    # Start UI in background if not running
+    _ensure_dagster_ui_running(force_restart=False)
+    
+    console.print("\n🚀 Executing pipeline...\n")
+    console.print("   Monitor progress at: http://127.0.0.1:3000\n")
+    
+    from prepare_annotations.pipelines.definitions import defs
+    
+    try:
+        job = defs.resolve_job_def(job_name)
+    except Exception:
+        console.print(f"[bold red]❌ Job '{job_name}' not found![/bold red]")
+        raise typer.Exit(1)
+    
+    # Build run config
+    run_config: dict = {"ops": {}}
+    
+    # Add config for longevitymap assets
+    lm_config: dict = {}
+    if db_path:
+        lm_config["db_path"] = db_path
+    if output_dir:
+        lm_config["output_dir"] = output_dir
+    
+    if lm_config:
+        run_config["ops"]["longevitymap_annotations"] = {"config": lm_config}
+        run_config["ops"]["longevitymap_studies"] = {"config": lm_config}
+        run_config["ops"]["longevitymap_weights"] = {"config": lm_config}
+        if full:
+            run_config["ops"]["longevitymap_with_ensembl"] = {"config": lm_config}
+    
+    # Add ensembl source config
+    ensembl_config: dict = {}
+    if ensembl_cache:
+        ensembl_config["local_cache_path"] = ensembl_cache
+    if ensembl_config:
+        run_config["ops"]["ensembl_variations_source"] = {"config": ensembl_config}
+    
+    with DagsterInstance.get() as instance:
+        result = job.execute_in_process(
+            instance=instance,
+            run_config=run_config if run_config["ops"] else None,
+        )
+    
+    if result.success:
+        console.print(f"\n[bold green]✅ Job '{job_name}' completed successfully![/bold green]")
+        console.print("\nOutput files:")
+        console.print("  - annotations.parquet: Variant-level facts")
+        console.print("  - studies.parquet: Per-study evidence")
+        console.print("  - weights.parquet: Genotype weights with Ensembl resolution")
+        if full:
+            console.print("  - longevitymap_ensembl_joined.parquet: Enriched with Ensembl data")
+    else:
+        console.print(f"\n[bold red]❌ Job '{job_name}' failed![/bold red]")
+        raise typer.Exit(1)
 
 
 @app.command()
@@ -1736,23 +1727,6 @@ def version():
         console.print(f"prepare-annotations version: [bold green]{v}[/bold green]")
     except importlib.metadata.PackageNotFoundError:
         console.print("prepare-annotations version: [yellow]development[/yellow]")
-
-
-def dagster_ensembl_ui():
-    """Standalone entrypoint to run Ensembl Dagster pipeline.
-    
-    By default runs the full pipeline (download → convert → split → upload).
-    Use 'dagster-ensembl ui' to start the web interface instead.
-    """
-    import sys
-    from prepare_annotations.cli import dagster_app
-    
-    # Default to "run" (executes full pipeline) if no subcommand provided
-    # Use 'dagster-ensembl ui' for the web interface
-    if len(sys.argv) == 1 or sys.argv[1].startswith("-"):
-        sys.argv.insert(1, "run")
-        
-    dagster_app()
 
 
 if __name__ == "__main__":

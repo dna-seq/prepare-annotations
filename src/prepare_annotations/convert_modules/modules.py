@@ -19,7 +19,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, FileSi
 from rich.table import Table
 from eliot import start_action
 
-from prepare_annotations.paths import LOGS_DIR, MODULES_DIR, MODULES_OUTPUT_DIR, get_cache_dir
+from prepare_annotations.resources import LOGS_DIR, MODULES_DIR, MODULES_OUTPUT_DIR, get_cache_dir
 from prepare_annotations.runtime import load_env
 from prepare_annotations.models import ModuleManifest, ModuleDependency
 
@@ -1052,12 +1052,12 @@ def convert_drugs(
     
     with start_action(action_type="convert_drugs_command") as action:
         if tsv_path is None:
-            tsv_path_resolved = Path("data/modules/just_drugs/annotation_tab.tsv")
+            tsv_path_resolved = MODULES_DIR / "just_drugs" / "annotation_tab.tsv"
         else:
             tsv_path_resolved = Path(tsv_path)
         
         if output_dir is None:
-            output_dir_resolved = Path("data/output/modules/drugs")
+            output_dir_resolved = MODULES_OUTPUT_DIR / "drugs"
         else:
             output_dir_resolved = Path(output_dir)
         

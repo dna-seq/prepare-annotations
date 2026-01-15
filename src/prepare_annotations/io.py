@@ -22,71 +22,22 @@ AnnotatedLazyFrame = AnnotatedResult[pl.LazyFrame]
 # - Path: save to the provided absolute/relative path
 SaveParquet = Union[Path, Literal["auto"], None]
 
-SaveVortex = Union[Path, Literal["auto"], None]
+def _strip_vcf_suffix(vcf_path: Path) -> Path:
+    """Strip .vcf plus any trailing compression/index suffixes."""
+    suffixes = vcf_path.suffixes
+    if ".vcf" in suffixes:
+        vcf_index = suffixes.index(".vcf")
+        stripped = vcf_path
+        for _ in range(len(suffixes) - vcf_index):
+            stripped = stripped.with_suffix("")
+        return stripped
+    return vcf_path
+
 
 def _default_parquet_path(vcf_path: Path) -> Path:
     """Generate default parquet path next to VCF file."""
-    # Remove .vcf or .vcf.gz extension before adding .parquet
-    if vcf_path.suffixes == ['.vcf', '.gz']:
-        # Handle .vcf.gz files
-        return vcf_path.with_suffix('').with_suffix('.parquet')
-    elif vcf_path.suffix == '.vcf':
-        # Handle .vcf files
-        return vcf_path.with_suffix('.parquet')
-    else:
-        # Fallback for other file types
-        return vcf_path.with_suffix('.parquet')
-
-
-def _default_vortex_path(vcf_path: Path) -> Path:
-    """Generate default vortex path next to VCF file."""
-    # Remove .vcf or .vcf.gz extension before adding .vortex
-    if vcf_path.suffixes == ['.vcf', '.gz']:
-        # Handle .vcf.gz files
-        return vcf_path.with_suffix('').with_suffix('.vortex')
-    elif vcf_path.suffix == '.vcf':
-        # Handle .vcf files
-        return vcf_path.with_suffix('.vortex')
-    else:
-        # Fallback for other file types
-        return vcf_path.with_suffix('.vortex')
-
-
-def resolve_prepare_annotations_subfolder(subdir_name: str, base: Optional[Union[str, Path]] = None) -> Path:
-    """
-    Resolve a subfolder path for prepare_annotations data storage.
-    
-    This function provides a consistent way to resolve data storage paths across
-    the prepare_annotations package, respecting the PREPARE_ANNOTATIONS_FOLDER environment variable.
-    
-    Args:
-        subdir_name: Name of the subdirectory to create/use
-        base: Base directory path. If None, uses PREPARE_ANNOTATIONS_FOLDER env var or defaults to "prepare_annotations"
-        
-    Returns:
-        Absolute path to the resolved subfolder
-        
-    Examples:
-        >>> # Using default base (PREPARE_ANNOTATIONS_FOLDER env var or "prepare_annotations")
-        >>> resolve_prepare_annotations_subfolder("downloads")
-        PosixPath('/home/user/.cache/prepare_annotations/downloads')
-        
-        >>> # Using custom base
-        >>> resolve_prepare_annotations_subfolder("vcf_files", "/tmp/myproject")
-        PosixPath('/tmp/myproject/vcf_files')
-    """
-    if base is None:
-        base = os.getenv("PREPARE_ANNOTATIONS_FOLDER", "prepare_annotations")
-    
-    base_path = Path(base)
-    
-    # If it's just a name (no path separators), use OS cache
-    if len(base_path.parts) == 1 and not base_path.is_absolute():
-        cache_path = Path(pooch.os_cache(str(base_path))) / subdir_name
-    else:
-        cache_path = base_path / subdir_name
-        
-    return cache_path.resolve()
+    stripped = _strip_vcf_suffix(vcf_path)
+    return stripped.with_suffix(".parquet")
 
 
 def get_info_fields(vcf_path: str) -> list[str]:
@@ -149,12 +100,18 @@ def is_parquet(path: Union[str, Path]) -> bool:
     return p.suffix == ".parquet" and not p.name.endswith(".tmp.parquet")
 
 
+def get_default_threads() -> int:
+    """Get a sensible default number of threads for Polars/io operations."""
+    import psutil
+    cpu_count = psutil.cpu_count(logical=True) or 4
+    return max(2, min(int(cpu_count * 0.75), 16))
+
+
 def read_vcf_file(
     file_path: Union[str, Path],
     info_fields: Union[list[str], None] = None,
     thread_num: Optional[int] = None,
     save_parquet: SaveParquet = "auto",
-    save_vortex: SaveVortex = None,
     engine: str = "streaming",
     compression: str = "zstd",
     compression_level: Optional[int] = 14,
@@ -167,15 +124,11 @@ def read_vcf_file(
         file_path: Path to the VCF file (can be .vcf or .vcf.gz)
         info_fields: The fields to read from the INFO column.
         thread_num: The number of threads to use for reading the VCF file. Used **only** for parallel decompression of BGZF blocks. Works only for **local** files.
+                    If None, uses a sensible default based on CPU count.
         save_parquet: Controls saving to parquet.
             - None: do not save
             - "auto" (default): save next to the input VCF, replacing .vcf/.vcf.gz with .parquet. 
               Example: data.vcf.gz -> data.parquet
-            - Path: save to the provided location
-        save_vortex: Controls saving to Vortex format.
-            - None: do not save
-            - "auto": if parquet saving is enabled, saves next to the parquet with .vortex extension;
-              otherwise saves next to the input, replacing .vcf/.vcf.gz with .vortex
             - Path: save to the provided location
         engine: Parquet engine to use for sinking (defaults to "streaming")
         compression: Compression type for parquet (e.g., "zstd", "snappy")
@@ -212,28 +165,21 @@ def read_vcf_file(
         else:
             parquet_path = None
 
-        # Resolve vortex path decision early (can depend on parquet path)
-        if isinstance(save_vortex, Path):
-            vortex_path: Optional[Path] = save_vortex
-        elif save_vortex == "auto":
-            vortex_path = parquet_path.with_suffix(".vortex") if parquet_path is not None else _default_vortex_path(file_path)
-        else:
-            vortex_path = None
-
         action.log(
             message_type="info",
             step="reading_vcf",
             parquet_path=str(parquet_path) if parquet_path else None,
-            vortex_path=str(vortex_path) if vortex_path else None,
         )
 
         # Let polars-bio handle compression autodetection and any VCF format issues
         actual_info_fields = get_info_fields(str(file_path)) if info_fields is None else info_fields
 
+        actual_thread_num = thread_num if thread_num is not None else get_default_threads()
+
         result = pb.scan_vcf(
             str(file_path),
             info_fields=actual_info_fields,
-            thread_num=thread_num if thread_num is not None else 1
+            thread_num=actual_thread_num
         )
         if alts_list:
             # 1. Define the transformation
@@ -256,30 +202,16 @@ def read_vcf_file(
             rows=result.height if hasattr(result, 'height') else 'unknown'
         )
 
-        # Save parquet if requested (and/or needed for vortex)
-        effective_parquet_path: Optional[Path] = parquet_path
-        temp_parquet_path: Optional[Path] = None
-
-        if effective_parquet_path is None and vortex_path is not None:
-            # Need a parquet file for vortex conversion but user didn't request saving parquet.
-            # Write a temporary parquet into prepare_annotations cache and remove it after conversion.
-            cache_dir = resolve_prepare_annotations_subfolder("tmp")
-            cache_dir.mkdir(parents=True, exist_ok=True)
-            fd, tmp_name = tempfile.mkstemp(prefix=f"{file_path.stem}_", suffix=".parquet", dir=str(cache_dir))
-            os.close(fd)
-            temp_parquet_path = Path(tmp_name)
-            effective_parquet_path = temp_parquet_path
-
-        if effective_parquet_path is not None:
+        # Save parquet if requested
+        if parquet_path is not None:
             with start_action(
                 action_type="save_parquet",
-                parquet_path=str(effective_parquet_path),
-                is_temporary=temp_parquet_path is not None,
+                parquet_path=str(parquet_path),
                 compression=compression,
                 compression_level=compression_level,
             ) as save_action:
                 # Use a temporary file for atomic write to avoid corrupted files if interrupted
-                actual_path = Path(effective_parquet_path)
+                actual_path = Path(parquet_path)
                 tmp_path = actual_path.with_suffix(".tmp.parquet")
                 
                 if isinstance(result, pl.LazyFrame):
@@ -304,38 +236,10 @@ def read_vcf_file(
                 save_action.log(
                     message_type="info",
                     step="parquet_saved",
-                    parquet_path=str(effective_parquet_path),
+                    parquet_path=str(parquet_path),
                 )
 
-        # Save vortex if requested
-        if vortex_path is not None:
-            from prepare_annotations.vortex.parquet_to_vortex import parquet_to_vortex as _parquet_to_vortex
-
-            with start_action(
-                action_type="save_vortex",
-                parquet_path=str(effective_parquet_path) if effective_parquet_path else None,
-                vortex_path=str(vortex_path),
-            ) as vortex_action:
-                vortex_output_path = _parquet_to_vortex(
-                    parquet_path=effective_parquet_path if effective_parquet_path is not None else file_path,
-                    vortex_path=vortex_path,
-                    overwrite=False,
-                )
-                vortex_action.log(
-                    message_type="info",
-                    step="vortex_saved",
-                    vortex_path=str(vortex_output_path),
-                )
-
-        # Cleanup temp parquet if we created one for vortex-only conversion
-        if temp_parquet_path is not None:
-            temp_parquet_path.unlink(missing_ok=True)
-
-        # If we saved parquet (even temporarily), return a LazyFrame scanning it only when it's a user-visible parquet.
-        if parquet_path is not None:
-            return pl.scan_parquet(str(parquet_path))
-
-        return result
+        return pl.scan_parquet(str(parquet_path)) if parquet_path is not None else result
 
 
 def merge_parquet_files(

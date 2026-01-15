@@ -6,7 +6,7 @@ This repository is dedicated to the preparation of genomic annotation data (Ense
 
 - `src/prepare_annotations/`: Core logic and CLI.
   - `cli.py`: Main Typer CLI entrypoint.
-  - `pipelines.py`: Main Prefect flow and pipeline definitions.
+  - `pipelines/`: Primary Dagster-based pipelines.
   - `vcf_downloader.py`: VCF download utilities.
   - `genome_downloader.py`: Ensembl genome download utilities.
   - `huggingface_uploader.py`: Upload utilities for HuggingFace Hub.
@@ -21,8 +21,7 @@ This repository is dedicated to the preparation of genomic annotation data (Ense
     - `superhuman.py`: Elite performance genetics conversion.
     - `vo2max.py`: VO2max conversion.
     - `common.py`: Shared conversion utilities.
-  - `vortex/`: Vortex data conversion utilities.
-  - `pipelines_dagster/`: Dagster-based pipeline alternative.
+  - `pipelines/`: Primary Dagster-based pipelines.
   - `io.py`: VCF/Parquet I/O utilities.
   - `runtime.py`: Execution environment and profiling.
   - `models.py`: Pydantic models for results.
@@ -36,19 +35,19 @@ This repository is dedicated to the preparation of genomic annotation data (Ense
 - **Type hints**: Mandatory for all Python code.
 - **Pathlib**: Always use for all file paths.
 - **Polars**: Prefer over Pandas for performance.
-- **Prefect**: Used for workflow orchestration and parallel execution.
+- **Dagster**: Primary tool for workflow orchestration and parallel execution.
 - **Eliot**: Used for structured logging and action tracking.
 - **Typer**: Mandatory for CLI tools.
 - **Pydantic 2**: Mandatory for data classes.
+- **Avoid __all__: avoid __init__.py with __all__ as it confuses where things are located
 
 ## Commands
 
-### Main Genomic Data Pipelines
+### Primary Dagster Pipelines (Recommended)
 
-- `uv run prepare-annotations ensembl`: Download and prepare Ensembl variations.
-- `uv run prepare-annotations clinvar`: Download and prepare ClinVar data.
-- `uv run prepare-annotations dbsnp`: Download and prepare dbSNP data.
-- `uv run prepare-annotations gnomad`: Download and prepare gnomAD data.
+- `uv run dagster-ensembl`: Run the full Ensembl pipeline (download, convert, upload).
+- `uv run dagster-ensembl ui`: Launch Dagster UI for Ensembl pipelines.
+- `uv run dagster-ui`: General Dagster development server entrypoint.
 
 ### OakVar Module Management
 

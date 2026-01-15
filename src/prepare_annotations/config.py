@@ -12,12 +12,14 @@ def get_default_workers() -> int:
 
 def get_parquet_workers() -> int:
     """
-    Return parquet workers from PREPARE_ANNOTATIONS_PARQUET_WORKERS env var or default of 4.
+    Return parquet workers from PREPARE_ANNOTATIONS_PARQUET_WORKERS env var or default.
 
     This is used for memory-intensive parquet operations (conversion, splitting, etc.) to avoid memory overload.
-    Default is 4 to balance performance and memory usage.
+    If not specified, defaults to min(4, CPU count).
     """
-    return int(os.getenv("PREPARE_ANNOTATIONS_PARQUET_WORKERS", 4))
+    import psutil
+    cpu_count = psutil.cpu_count(logical=True) or 4
+    return int(os.getenv("PREPARE_ANNOTATIONS_PARQUET_WORKERS", min(cpu_count, 4)))
 
 
 def get_download_workers() -> int:

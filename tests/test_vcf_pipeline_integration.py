@@ -5,7 +5,7 @@ from typing import List
 import pytest
 from eliot import start_action
 
-from prepare_annotations.pipelines import prepare_vcf_source_flow
+from prepare_annotations.pipelines.logic import prepare_vcf_source
 from prepare_annotations.vcf_downloader import list_paths
 
 
@@ -26,13 +26,12 @@ def test_vcf_pipeline_downloads_to_temp(tmp_path: Path) -> None:
         preferred_urls = list_paths(url=base_url, pattern=preferred_pattern, file_only=True)
         pattern = preferred_pattern if preferred_urls else fallback_pattern
 
-        # Run Prefect flow
-        results = prepare_vcf_source_flow(
+        # Run logic directly
+        results = prepare_vcf_source(
             url=base_url,
             pattern=pattern,
             name="pytest_vcf_pipeline",
             dest_dir=tmp_path,
-            profile=True,
         )
 
         local_paths = results.vcf_local
@@ -45,7 +44,7 @@ def test_vcf_pipeline_downloads_to_temp(tmp_path: Path) -> None:
         for i, (local_p, parquet_p) in enumerate(zip(local_paths, parquet_paths)):
             assert local_p.exists(), f"Downloaded file does not exist: {local_p}"
             assert local_p.stat().st_size > 0, f"Downloaded file is empty: {local_p}"
-            assert local_p.parent.resolve() == tmp_path.resolve(), (
+            assert tmp_path.resolve() in local_p.resolve().parents, (
                 f"File {local_p} not saved under the temporary destination {tmp_path}"
             )
             

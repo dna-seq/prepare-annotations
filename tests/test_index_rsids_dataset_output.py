@@ -4,7 +4,7 @@ from pathlib import Path
 
 import polars as pl
 
-from prepare_annotations.pipelines import compute_rsid_coordinates_task
+from prepare_annotations.pipelines.logic import compute_rsid_coordinates
 
 
 def _write_test_parquet(path: Path, chrom: str) -> None:
@@ -35,15 +35,15 @@ def test_index_rsids_as_dataset_writes_chunks_and_counts(temp_dir: Path) -> None
     # - chr1: 3 rows (2 duplicates for rs1@100 + rs2@200)
     # - chr2: 3 rows (same pattern)
     # Across dirs duplicates also exist, but DISTINCT happens per chromosome group.
-    _write_test_parquet(input_dir / "SNV" / "homo_sapiens-chr1.vcf.parquet", "1")
-    _write_test_parquet(input_dir / "deletion" / "homo_sapiens-chr1.vcf.parquet", "1")
-    _write_test_parquet(input_dir / "SNV" / "homo_sapiens-chr2.vcf.parquet", "2")
-    _write_test_parquet(input_dir / "deletion" / "homo_sapiens-chr2.vcf.parquet", "2")
+    _write_test_parquet(input_dir / "SNV" / "homo_sapiens-chr1.parquet", "1")
+    _write_test_parquet(input_dir / "deletion" / "homo_sapiens-chr1.parquet", "1")
+    _write_test_parquet(input_dir / "SNV" / "homo_sapiens-chr2.parquet", "2")
+    _write_test_parquet(input_dir / "deletion" / "homo_sapiens-chr2.parquet", "2")
 
     output_dir = temp_dir / "rsid_coordinates"
 
-    # Prefect task: call underlying function directly for unit test simplicity.
-    result = compute_rsid_coordinates_task.fn(
+    # Call underlying logic directly for unit test simplicity.
+    result = compute_rsid_coordinates(
         input_dir=input_dir,
         output_path=output_dir,
         memory_fraction=0.1,
@@ -65,14 +65,14 @@ def test_index_rsids_single_file_is_valid_parquet_and_counts(temp_dir: Path) -> 
     (input_dir / "SNV").mkdir(parents=True, exist_ok=True)
     (input_dir / "deletion").mkdir(parents=True, exist_ok=True)
 
-    _write_test_parquet(input_dir / "SNV" / "homo_sapiens-chr1.vcf.parquet", "1")
-    _write_test_parquet(input_dir / "deletion" / "homo_sapiens-chr1.vcf.parquet", "1")
-    _write_test_parquet(input_dir / "SNV" / "homo_sapiens-chr2.vcf.parquet", "2")
-    _write_test_parquet(input_dir / "deletion" / "homo_sapiens-chr2.vcf.parquet", "2")
+    _write_test_parquet(input_dir / "SNV" / "homo_sapiens-chr1.parquet", "1")
+    _write_test_parquet(input_dir / "deletion" / "homo_sapiens-chr1.parquet", "1")
+    _write_test_parquet(input_dir / "SNV" / "homo_sapiens-chr2.parquet", "2")
+    _write_test_parquet(input_dir / "deletion" / "homo_sapiens-chr2.parquet", "2")
 
     output_file = temp_dir / "rsid_coordinates.parquet"
 
-    result = compute_rsid_coordinates_task.fn(
+    result = compute_rsid_coordinates(
         input_dir=input_dir,
         output_path=output_file,
         memory_fraction=0.1,
