@@ -1,18 +1,16 @@
 # Prepare Annotations
 
-A dedicated toolkit for downloading, processing, and preparing genomic annotation datasets.
+A dedicated toolkit for downloading, processing, and preparing genomic annotation datasets (Ensembl, ClinVar, dbSNP, gnomAD) using **Dagster** for robust, parallel, and observable pipelines.
 
-## Features
+## 🔷 Why Dagster?
 
-- **Dagster-based Pipelines (Primary)**: Software-Defined Assets (SDA) with full lineage tracking, parallel execution, and automated Hugging Face uploads.
-- **Support for multiple sources**:
-  - **Ensembl**: Human genetic variations.
-  - **ClinVar**: Clinical variant data.
-  - **dbSNP**: Single Nucleotide Polymorphism database.
-  - **gnomAD**: Genome Aggregation Database.
-- **OakVar Module Management**: Download and convert data from [dna-seq](https://github.com/orgs/dna-seq/repositories) OakVar modules.
-- **VCF to Parquet**: Efficient conversion of large VCF files to columnar format using `polars-bio`.
-- **Hugging Face Hub Integration**: Direct upload of processed datasets with automatic dataset card generation.
+Genomic data preparation is complex, involving multi-GB downloads and multi-step transformations. We use Dagster to provide:
+
+- **Software-Defined Assets (SDA)**: Instead of just running "tasks", we define **Assets** (like a Parquet file). Dagster understands the dependencies between assets and only runs what is necessary.
+- **Lineage & Observability**: You can visualize exactly which source VCF produced which output Parquet file. If a file looks wrong, you can trace it back to its source.
+- **Dynamic Partitioning**: We discover files on remote servers (like Ensembl FTP) and create a "partition" for each. This allows fine-grained progress tracking and the ability to retry only failed files.
+- **Parallelism & Concurrency**: Safe parallel execution with configurable limits to avoid overloading source servers or local system resources.
+- **Self-Documenting**: The Dagster UI provides a live, interactive map of your data pipeline and its current state.
 
 ## Installation
 
@@ -26,107 +24,52 @@ uv sync
 
 ## Usage
 
-### 🔷 Dagster Pipelines
+### Running Pipelines
 
-The primary way to run pipelines is using Dagster. This provides parallel execution, resumable downloads, and integrated Hugging Face uploads.
+The primary entry points are `dagster-ensembl` for running jobs and `dagster-ui` for the web interface.
 
 ![Dagster Pipeline Lineage](images/pipelines.jpg)
 
-#### Ensembl Pipeline
-
 ```bash
-# Run the full pipeline (download → convert → upload)
+# Run the full Ensembl pipeline (download → convert → upload)
 uv run dagster-ensembl
 
-# Start the Dagster UI for monitoring and interactive execution
-uv run dagster-ensembl ui
+# Start the Dagster UI for monitoring and lineage visualization
+uv run dagster-ui
 
 # Run for a specific species
-uv run dagster-ensembl run --species mus_musculus
+uv run dagster-ensembl --species mus_musculus
+
+# Run specific jobs (prepare, download, convert, upload, longevitymap)
+uv run prepare job download
+uv run prepare job convert
 ```
 
-#### Other Dagster Commands
+### Advanced Operations
+
+Use the `prepare` command for more granular control:
 
 ```bash
-# List all available assets
-uv run dagster-ui assets
+# List all available assets and jobs
+uv run prepare assets
+uv run prepare jobs
 
 # Materialize specific assets
-uv run dagster-ui materialize ensembl_vcf_urls
+uv run prepare materialize ensembl_vcf_urls
+uv run prepare materialize ensembl_vcf_file --partition homo_sapiens.vcf.gz
 ```
 
 ### OakVar Module Management
 
 The `modules` command manages OakVar modules from the [dna-seq GitHub organization](https://github.com/orgs/dna-seq/repositories).
 
-#### Download Module Data
-
-Download data files (SQLite databases, etc.) from module repositories:
-
 ```bash
-# Download longevitymap data
+# Download data files from a module
 uv run modules data --repo dna-seq/just_longevitymap
 
-# Download other modules
-uv run modules data --repo dna-seq/just_pathogenic
-uv run modules data --repo dna-seq/just_cancer
-uv run modules data --repo dna-seq/just_coronary
-uv run modules data --repo dna-seq/just_vo2max
-uv run modules data --repo dna-seq/just_lipidmetabolism
-
-# Download with specific extensions
-uv run modules data --ext .parquet --ext .csv
-
-# Download to custom directory
-uv run modules data --output-dir /path/to/output
-```
-
-#### Clone Full Module Repository
-
-Clone entire module repositories:
-
-```bash
-# Clone longevitymap module
-uv run modules clone --repo dna-seq/just_longevitymap
-
-# Clone to specific directory
-uv run modules clone --repo dna-seq/just_pathogenic --output-dir ./modules/
-```
-
-#### Convert Module Data
-
-Convert OakVar module data to unified annotation schema:
-
-```bash
-# Convert LongevityMap to unified schema (3 parquet files)
+# Convert module data to unified schema
 uv run modules convert-longevitymap
-
-# With custom paths
-uv run modules convert-longevitymap \
-  --db-path data/modules/just_longevitymap/longevitymap.sqlite \
-  --output-dir data/output/modules/longevitymap \
-  --curator "Olga Borysova" \
-  --method "literature_review"
 ```
-
-The conversion produces three parquet files:
-- **annotations.parquet**: Variant-level facts (rsid, module, gene, phenotype, category)
-- **studies.parquet**: Per-study evidence (rsid, module, pmid, population, conclusion, study_design)
-- **weights.parquet**: Curator-defined scoring (rsid, genotype, module, weight, state, priority, curator, method)
-
-### Available Modules
-
-The following modules are available from the [dna-seq organization](https://github.com/orgs/dna-seq/repositories):
-
-- **just_longevitymap**: Longevity-associated variants
-- **just_pathogenic**: Pathogenic variant annotations
-- **just_cancer**: Cancer-associated genes
-- **just_coronary**: Coronary disease variants
-- **just_vo2max**: VO2max-related variants
-- **just_lipidmetabolism**: Lipid metabolism variants
-- **just_prs**: Polygenic risk score data
-- **just_drugs**: Pharmacogenomic data
-- **just_superhuman**: Elite performance genetics
 
 ## Package Structure
 
@@ -159,76 +102,14 @@ src/prepare_annotations/
 └── converters/             # OakVar module converters
 ```
 
-### Import Examples
-
-```python
-# Dagster definitions
-from prepare_annotations.definitions import defs
-
-# Standalone API
-from prepare_annotations.pipelines import PreparationPipelines
-
-# Core utilities
-from prepare_annotations.core.io import read_vcf_file
-from prepare_annotations.core.paths import get_cache_dir
-
-# Downloaders
-from prepare_annotations.downloaders.vcf import download_path
-
-# HuggingFace
-from prepare_annotations.huggingface.uploader import upload_parquet_to_hf
-```
-
-## Development
-
-See [AGENTS.md](AGENTS.md) for development guidelines and repository layout.
-
-### Running Tests
-
-The project includes comprehensive test suites with automatic data download:
+## Testing
 
 ```bash
 # Run all tests (excluding large downloads)
 uv run pytest
 
-# Run specific test file
+# Run specific module tests
 uv run pytest tests/test_longevitymap_module.py -v
-
-# Run with all markers (including large downloads)
-uv run pytest -m ""
-```
-
-#### Test Features
-
-- **Auto-download**: Tests automatically download required data from GitHub if not present
-- **Integration tests**: Real data validation (no mocking unless necessary)
-- **Module validation**: Comprehensive validation of converted module data
-
-Example test modules:
-- `test_longevitymap_module.py`: 47 tests validating longevitymap conversion accuracy
-  - Validates weights table preservation (1043 rows, 528 variants)
-  - Verifies APOE variant weights (rs7412, rs429358)
-  - Tests schema transformations
-  - Validates studies and annotations tables
-
-The tests will automatically:
-1. Download SQLite data from `dna-seq/just_longevitymap` if missing
-2. Convert to unified parquet schema if needed
-3. Run comprehensive validation checks
-
-### Data Directories
-
-```
-data/
-├── modules/                    # Downloaded module data
-│   └── just_longevitymap/
-│       └── longevitymap.sqlite
-└── output/                     # Converted/processed data
-    └── modules/
-        └── longevitymap/
-            ├── annotations.parquet
-            ├── studies.parquet
-            └── weights.parquet
 ```
 
 ## License
