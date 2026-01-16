@@ -3,7 +3,7 @@ from __future__ import annotations
 import gzip
 from pathlib import Path
 
-from prepare_annotations.genome_downloader import ensure_uncompressed_fasta_with_fai
+from prepare_annotations.downloaders.genome import ensure_uncompressed_fasta_with_fai
 
 
 def test_ensure_uncompressed_fasta_with_fai_creates_fa_and_fai(tmp_path: Path) -> None:

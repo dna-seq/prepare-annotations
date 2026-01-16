@@ -19,9 +19,9 @@ from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, FileSi
 from rich.table import Table
 from eliot import start_action
 
-from prepare_annotations.resources import LOGS_DIR, MODULES_DIR, MODULES_OUTPUT_DIR, get_cache_dir
-from prepare_annotations.runtime import load_env
-from prepare_annotations.models import ModuleManifest, ModuleDependency
+from prepare_annotations.core.paths import LOGS_DIR, MODULES_DIR, MODULES_OUTPUT_DIR, get_cache_dir
+from prepare_annotations.core.runtime import load_env
+from prepare_annotations.core.models import ModuleManifest, ModuleDependency
 
 logs = LOGS_DIR
 
@@ -550,7 +550,7 @@ def convert_longevitymap(
     with ref allele from Ensembl VCF for heterozygous variants.
     """
     from rich.progress import Progress, SpinnerColumn, TextColumn
-    from prepare_annotations.convert_modules.longevitymap import convert_longevitymap as do_convert
+    from prepare_annotations.converters.longevitymap import convert_longevitymap as do_convert
     
     if log:
         logs.mkdir(exist_ok=True, parents=True)
@@ -722,7 +722,7 @@ def convert_lipidmetabolism(
     Convert Lipid Metabolism to unified annotation schema (three parquet files).
     """
     from rich.progress import Progress, SpinnerColumn, TextColumn
-    from prepare_annotations.convert_modules.lipidmetabolism import convert_lipidmetabolism as do_convert
+    from prepare_annotations.converters.lipidmetabolism import convert_lipidmetabolism as do_convert
     
     if log:
         logs.mkdir(exist_ok=True, parents=True)
@@ -801,7 +801,7 @@ def convert_vo2max(
     Convert VO2max to unified annotation schema (three parquet files).
     """
     from rich.progress import Progress, SpinnerColumn, TextColumn
-    from prepare_annotations.convert_modules.vo2max import convert_vo2max as do_convert
+    from prepare_annotations.converters.vo2max import convert_vo2max as do_convert
     
     if log:
         logs.mkdir(exist_ok=True, parents=True)
@@ -883,7 +883,7 @@ def convert_superhuman(
     The weight column will be NULL, and state is derived from superability/adverse_effects.
     """
     from rich.progress import Progress, SpinnerColumn, TextColumn
-    from prepare_annotations.convert_modules.superhuman import convert_superhuman as do_convert
+    from prepare_annotations.converters.superhuman import convert_superhuman as do_convert
     
     if log:
         logs.mkdir(exist_ok=True, parents=True)
@@ -962,7 +962,7 @@ def convert_coronary(
     Convert Coronary Disease to unified annotation schema (three parquet files).
     """
     from rich.progress import Progress, SpinnerColumn, TextColumn
-    from prepare_annotations.convert_modules.coronary import convert_coronary as do_convert
+    from prepare_annotations.converters.coronary import convert_coronary as do_convert
     
     if log:
         logs.mkdir(exist_ok=True, parents=True)
@@ -1043,7 +1043,7 @@ def convert_drugs(
     Note: This module uses TSV format and may not have complete genotype information.
     """
     from rich.progress import Progress, SpinnerColumn, TextColumn
-    from prepare_annotations.convert_modules.drugs import convert_drugs as do_convert
+    from prepare_annotations.converters.drugs import convert_drugs as do_convert
     
     if log:
         logs.mkdir(exist_ok=True, parents=True)
@@ -1137,12 +1137,12 @@ def convert_all(
     from rich.table import Table
     
     # Import all converters
-    from prepare_annotations.convert_modules.longevitymap import convert_longevitymap
-    from prepare_annotations.convert_modules.lipidmetabolism import convert_lipidmetabolism
-    from prepare_annotations.convert_modules.vo2max import convert_vo2max
-    from prepare_annotations.convert_modules.superhuman import convert_superhuman
-    from prepare_annotations.convert_modules.coronary import convert_coronary
-    from prepare_annotations.convert_modules.drugs import convert_drugs
+    from prepare_annotations.converters.longevitymap import convert_longevitymap
+    from prepare_annotations.converters.lipidmetabolism import convert_lipidmetabolism
+    from prepare_annotations.converters.vo2max import convert_vo2max
+    from prepare_annotations.converters.superhuman import convert_superhuman
+    from prepare_annotations.converters.coronary import convert_coronary
+    from prepare_annotations.converters.drugs import convert_drugs
     
     if log:
         logs.mkdir(exist_ok=True, parents=True)

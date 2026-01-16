@@ -10,7 +10,7 @@ import shutil
 import os
 from pathlib import Path
 import pooch
-from prepare_annotations.resources import MODULES_DIR
+from prepare_annotations.core.paths import MODULES_DIR
 from pycomfort.logging import to_nice_stdout
 
 

@@ -6,7 +6,7 @@ import pytest
 from eliot import start_action
 
 from prepare_annotations.pipelines.logic import prepare_vcf_source
-from prepare_annotations.vcf_downloader import list_paths
+from prepare_annotations.downloaders.vcf import list_paths
 
 
 @pytest.mark.integration

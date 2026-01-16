@@ -1,5 +1,5 @@
 """
-Convert VO2max SQLite data to unified annotation schema.
+Convert Coronary Disease SQLite data to unified annotation schema.
 
 Outputs three Parquet files:
 - annotations.parquet: Variant-level facts
@@ -23,92 +23,85 @@ def normalize_genotype(genotype: str | None) -> list[str] | None:
     return sorted(list(genotype))
 
 
-def convert_vo2max_annotations(db_path: Path) -> pl.LazyFrame:
+def convert_coronary_annotations(db_path: Path) -> pl.LazyFrame:
     """
-    Convert VO2max to annotations.parquet format.
+    Convert Coronary Disease to annotations.parquet format.
     
     Schema: rsid, module, gene, phenotype, category
     """
-    with start_action(action_type="convert_vo2max_annotations", db_path=str(db_path)):
+    with start_action(action_type="convert_coronary_annotations", db_path=str(db_path)):
         conn = sqlite3.connect(db_path)
         
-        # Get unique rsid -> gene mappings from rsid table
         query = """
         SELECT DISTINCT
-            rsid,
-            gene
-        FROM rsid
-        WHERE rsid IS NOT NULL
+            rsID as rsid,
+            Gene as gene
+        FROM coronary_disease
+        WHERE rsID IS NOT NULL
         """
         df = pl.read_database(query, connection=conn).lazy()
         conn.close()
         
         return df.with_columns(
-            pl.lit("vo2max").alias("module"),
-            pl.lit("athletic_performance").alias("phenotype"),
-            pl.lit("vo2max").alias("category"),
+            pl.lit("coronary").alias("module"),
+            pl.lit("coronary_disease").alias("phenotype"),
+            pl.lit("cardiovascular").alias("category"),
         ).select("rsid", "module", "gene", "phenotype", "category")
 
 
-def convert_vo2max_studies(db_path: Path) -> pl.LazyFrame:
+def convert_coronary_studies(db_path: Path) -> pl.LazyFrame:
     """
-    Convert VO2max to studies.parquet format.
+    Convert Coronary Disease to studies.parquet format.
     
     Schema: rsid, module, pmid, population, p_value, conclusion, study_design
-    
-    Uses the rsid table which has pmids, population, p_value, and rsid_conclusion.
     """
-    with start_action(action_type="convert_vo2max_studies", db_path=str(db_path)):
+    with start_action(action_type="convert_coronary_studies", db_path=str(db_path)):
         conn = sqlite3.connect(db_path)
         
         query = """
         SELECT DISTINCT
-            rsid,
-            pmids as pmid,
-            population,
-            p_value,
-            rsid_conclusion as conclusion
-        FROM rsid
-        WHERE rsid IS NOT NULL
+            rsID as rsid,
+            PMID as pmid,
+            Population as population,
+            P_value as p_value,
+            Conclusion as conclusion,
+            GWAS_study_design as study_design
+        FROM coronary_disease
+        WHERE rsID IS NOT NULL
         """
         df = pl.read_database(query, connection=conn).lazy()
         conn.close()
         
         return df.with_columns(
-            pl.lit("vo2max").alias("module"),
-            pl.lit(None).cast(pl.Utf8).alias("study_design"),
+            pl.lit("coronary").alias("module"),
         ).select("rsid", "module", "pmid", "population", "p_value", "conclusion", "study_design")
 
 
-def convert_vo2max_weights(
+def convert_coronary_weights(
     db_path: Path,
     curator: str = "just-dna-seq",
-    method: str = "literature_review",
+    method: str = "gwas_literature",
 ) -> pl.LazyFrame:
     """
-    Convert VO2max to weights.parquet format.
+    Convert Coronary Disease to weights.parquet format.
     
     Schema: rsid, genotype, module, weight, state, priority, conclusion, curator, method
-    
-    The genotype_weights table has the weight data.
-    Note: Column is 'rsID' not 'rsid' in genotype_weights table.
     """
     with start_action(
-        action_type="convert_vo2max_weights",
+        action_type="convert_coronary_weights",
         db_path=str(db_path),
     ):
         conn = sqlite3.connect(db_path)
         
-        # Load weights - note rsID column name
         query = """
         SELECT 
             rsID as rsid,
-            genotype,
-            weight,
+            Genotype as genotype,
+            Weight as weight,
             state,
-            genotype_specific_conclusion as conclusion
-        FROM genotype_weights
-        WHERE rsID IS NOT NULL
+            Conclusion as conclusion
+        FROM coronary_disease
+        WHERE rsID IS NOT NULL AND Genotype IS NOT NULL
         """
         weights_raw = pl.read_database(query, connection=conn).lazy()
         conn.close()
@@ -140,7 +133,7 @@ def convert_vo2max_weights(
             # Convert weight to float (stored as TEXT in SQLite)
             pl.col("weight").cast(pl.Float64, strict=False).alias("weight"),
             # Add module, curator, method
-            pl.lit("vo2max").alias("module"),
+            pl.lit("coronary").alias("module"),
             pl.lit(curator).alias("curator"),
             pl.lit(method).alias("method"),
             pl.lit(None).cast(pl.Utf8).alias("priority"),
@@ -186,14 +179,14 @@ def convert_vo2max_weights(
         return result
 
 
-def convert_vo2max(
+def convert_coronary(
     db_path: Path,
     output_dir: Path,
     curator: str = "just-dna-seq",
-    method: str = "literature_review",
+    method: str = "gwas_literature",
 ) -> dict[str, Path]:
     """
-    Convert VO2max SQLite to unified annotation schema.
+    Convert Coronary Disease SQLite to unified annotation schema.
     
     Outputs three Parquet files to output_dir:
     - annotations.parquet
@@ -201,7 +194,7 @@ def convert_vo2max(
     - weights.parquet
     
     Args:
-        db_path: Path to VO2max SQLite database
+        db_path: Path to Coronary Disease SQLite database
         output_dir: Directory for output Parquet files
         curator: Curator name for weights
         method: Curation method for weights
@@ -210,7 +203,7 @@ def convert_vo2max(
         Dictionary mapping table names to output paths
     """
     with start_action(
-        action_type="convert_vo2max",
+        action_type="convert_coronary",
         db_path=str(db_path),
         output_dir=str(output_dir),
     ):
@@ -218,25 +211,25 @@ def convert_vo2max(
         outputs = {}
         
         # Convert annotations
-        annotations = convert_vo2max_annotations(db_path)
+        annotations = convert_coronary_annotations(db_path)
         annotations_path = output_dir / "annotations.parquet"
-        annotations.collect().write_parquet(annotations_path)
+        annotations.sink_parquet(annotations_path, engine="streaming")
         outputs["annotations"] = annotations_path
         
         # Convert studies
-        studies = convert_vo2max_studies(db_path)
+        studies = convert_coronary_studies(db_path)
         studies_path = output_dir / "studies.parquet"
-        studies.collect().write_parquet(studies_path)
+        studies.sink_parquet(studies_path, engine="streaming")
         outputs["studies"] = studies_path
         
         # Convert weights
-        weights = convert_vo2max_weights(
+        weights = convert_coronary_weights(
             db_path,
             curator=curator,
             method=method,
         )
         weights_path = output_dir / "weights.parquet"
-        weights.collect().write_parquet(weights_path)
+        weights.sink_parquet(weights_path, engine="streaming")
         outputs["weights"] = weights_path
         
         return outputs

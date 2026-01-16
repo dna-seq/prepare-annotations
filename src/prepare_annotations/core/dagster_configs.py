@@ -118,11 +118,27 @@ class EnsemblSourceConfig(Config):
     prefer_local: bool = True
 
 
+class LongevityMapSourceConfig(Config):
+    """Configuration for downloading LongevityMap SQLite from GitHub."""
+    
+    # GitHub repository in owner/repo format
+    github_repo: str = "dna-seq/just_longevitymap"
+    # Path to the SQLite file in the repository
+    file_path: str = "data/longevitymap.sqlite"
+    # Branch or tag to download from
+    ref: str = "master"
+    # Force re-download even if file exists
+    force_download: bool = False
+    
+    @property
+    def download_url(self) -> str:
+        """Get the raw GitHub download URL."""
+        return f"https://github.com/{self.github_repo}/raw/{self.ref}/{self.file_path}"
+
+
 class LongevityMapConfig(Config):
     """Configuration for LongevityMap module conversion."""
     
-    # Path to module SQLite database. If None, uses default location.
-    db_path: Optional[str] = None
     # Module name in output
     module_name: str = "longevitymap"
     # Curator name

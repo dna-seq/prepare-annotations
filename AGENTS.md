@@ -34,9 +34,6 @@ The package follows Dagster best practices with utilities organized in subpackag
   - `converters/`: OakVar module converters
     - `longevitymap.py`, `coronary.py`, `drugs.py`, etc.
     - `common.py`: Shared conversion utilities
-  
-  - `pipelines/`: Legacy Dagster location (backward compat)
-  - `convert_modules/`: Legacy converters location (backward compat)
 
 - `dataset_cards/`: Markdown templates for Hugging Face dataset cards
 - `tests/`: Unit and integration tests

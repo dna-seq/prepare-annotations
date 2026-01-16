@@ -51,9 +51,6 @@ from prepare_annotations.core.paths import (
     list_ensembl_variation_parquets,
     list_ensembl_genome_fastas,
     get_default_cache_dir,
-    get_default_input_dir,
-    get_default_interim_dir,
-    get_default_output_dir,
     get_output_dir,
     get_default_ensembl_cache_dir,
 )

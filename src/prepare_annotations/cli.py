@@ -26,8 +26,8 @@ from prepare_annotations.huggingface.dataset_cards import (
 )
 from huggingface_hub import HfApi
 
-from prepare_annotations.runtime import load_env
-from prepare_annotations.resources import LOGS_DIR, get_default_input_dir, get_default_output_dir
+from prepare_annotations.core.runtime import load_env
+from prepare_annotations.core.paths import LOGS_DIR, get_default_cache_dir, get_output_dir
 
 logs = LOGS_DIR
 
@@ -97,7 +97,7 @@ def run_pipeline(
             **pipeline_kwargs
         )
         
-        effective_dest = dest_dir if dest_dir else get_default_input_dir(name)
+        effective_dest = dest_dir if dest_dir else get_default_cache_dir(name)
         console.print(f"📁 Destination: [bold blue]{effective_dest}[/bold blue]")
         console.print(f"🔄 Splitting: [bold blue]{split}[/bold blue]")
         
@@ -134,7 +134,7 @@ def run_pipeline(
             console.print(f"\n🔄 Starting upload to Hugging Face...")
             console.print(f"📦 Repository: [bold cyan]{repo_id}[/bold cyan]")
             
-            upload_source_dir = Path(dest_dir) if dest_dir else get_default_output_dir(name)
+            upload_source_dir = Path(dest_dir) if dest_dir else get_default_cache_dir(name)
             if split:
                 upload_source_dir = upload_source_dir / "splitted_variants"
             
@@ -225,7 +225,7 @@ def _dagster_run_ensembl(
         ensembl_hf_upload,
         ENSEMBL_VCF_PARTITIONS,
     )
-    from prepare_annotations.dagster_io_managers import (
+    from prepare_annotations.core.dagster_io_managers import (
         ensembl_cache_io_manager,
         huggingface_upload_io_manager,
     )
@@ -283,7 +283,7 @@ def _dagster_run_ensembl(
     if job_name in ("download", "prepare", "full"):
         # Step 2: Download VCF files (parallel downloader + sequential lineage materialization)
         from concurrent.futures import ThreadPoolExecutor, as_completed
-        from prepare_annotations.dagster_configs import EnsemblDownloadConfig
+        from prepare_annotations.core.dagster_configs import EnsemblDownloadConfig
         from prepare_annotations.core.paths import (
             get_default_ensembl_cache_dir,
             get_ensembl_species_url,
@@ -1221,27 +1221,27 @@ def update_card(
     config = {
         "ensembl": {
             "repo": "just-dna-seq/ensembl_variations",
-            "source": get_default_output_dir("ensembl"),
+            "source": get_default_cache_dir("ensembl"),
             "card_gen": generate_ensembl_card
         },
         "clinvar": {
             "repo": "just-dna-seq/clinvar",
-            "source": get_default_output_dir("clinvar"),
+            "source": get_default_cache_dir("clinvar"),
             "card_gen": generate_clinvar_card
         },
         "dbsnp": {
             "repo": "just-dna-seq/dbsnp",
-            "source": get_default_output_dir("dbsnp_grch38"),
+            "source": get_default_cache_dir("dbsnp_grch38"),
             "card_gen": generate_dbsnp_card
         },
         "dbsnp_t2t": {
             "repo": "just-dna-seq/dbsnp_t2t",
-            "source": get_default_output_dir("dbsnp_t2t"),
+            "source": get_default_cache_dir("dbsnp_t2t"),
             "card_gen": generate_dbsnp_t2t_card
         },
         "gnomad": {
             "repo": "just-dna-seq/gnomad",
-            "source": get_default_output_dir("gnomad_v4"),
+            "source": get_default_cache_dir("gnomad_v4"),
             "card_gen": generate_gnomad_card
         }
     }
@@ -1262,9 +1262,9 @@ def update_card(
     if not source_path.exists():
         # Try fallback for dbsnp/gnomad versions
         if dataset.lower() == "dbsnp":
-            source_path = get_default_output_dir("dbsnp_grch37")
+            source_path = get_default_cache_dir("dbsnp_grch37")
         elif dataset.lower() == "gnomad":
-            source_path = get_default_output_dir("gnomad_v3")
+            source_path = get_default_cache_dir("gnomad_v3")
             
         if (source_path / "splitted_variants").exists():
             source_path = source_path / "splitted_variants"
@@ -1549,7 +1549,7 @@ def dagster_materialize(
         longevitymap_with_ensembl,
         longevitymap_hf_upload,
     )
-    from prepare_annotations.dagster_io_managers import (
+    from prepare_annotations.core.dagster_io_managers import (
         ensembl_cache_io_manager,
         huggingface_upload_io_manager,
     )
@@ -1643,7 +1643,7 @@ def dagster_job(
         result = execute_job(
             job_def,
             instance=instance,
-            raise_on_error=False,
+            raise_on_error=True,
         )
         
         if result.success:
@@ -1765,13 +1765,9 @@ def dagster_run_longevitymap(
     console.print("\n🚀 Executing pipeline...\n")
     console.print("   Monitor progress at: http://127.0.0.1:3000\n")
     
-    from prepare_annotations.pipelines.definitions import defs
+    from prepare_annotations.definitions import defs
     
-    try:
-        job = defs.resolve_job_def(job_name)
-    except Exception:
-        console.print(f"[bold red]❌ Job '{job_name}' not found![/bold red]")
-        raise typer.Exit(1)
+    job = defs.resolve_job_def(job_name)
     
     # Build run config
     run_config: dict = {"ops": {}}

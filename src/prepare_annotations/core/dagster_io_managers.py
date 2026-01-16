@@ -10,11 +10,12 @@ from typing import Any
 
 from dagster import IOManager, io_manager, InputContext, OutputContext
 
-from prepare_annotations.io import _default_parquet_path
-from prepare_annotations.pipelines.resources import (
-    get_cache_dir,
+from prepare_annotations.core.io import _default_parquet_path
+from prepare_annotations.core.paths import (
     get_default_ensembl_cache_dir,
     get_output_dir,
+    MODULES_DIR,
+    MODULES_OUTPUT_DIR,
 )
 
 
@@ -54,6 +55,13 @@ class EnsemblCacheIOManager(IOManager):
     
     def handle_output(self, context: OutputContext, obj: Any) -> None:
         """Asset was materialized - data already on disk, just log."""
+        asset_key = context.asset_key.to_user_string()
+        if asset_key == "ensembl_variations_source":
+            cache_path = self._get_asset_path(asset_key)
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            cache_path.write_text(str(obj))
+            context.log.info(f"Ensembl source recorded at: {cache_path}")
+            return
         if isinstance(obj, Path):
             context.log.info(f"Ensembl asset stored at: {obj}")
         elif isinstance(obj, list):
@@ -77,7 +85,10 @@ class EnsemblCacheIOManager(IOManager):
                 f"Ensembl cache not found at {cache_path}. "
                 f"Materialize the {asset_key} asset first."
             )
-        
+        if asset_key == "ensembl_variations_source":
+            context.log.info(f"Loading Ensembl source from cache: {cache_path}")
+            return cache_path.read_text().strip()
+
         context.log.info(f"Loading Ensembl data from cache: {cache_path}")
         return cache_path
 
@@ -109,10 +120,66 @@ class HuggingFaceUploadIOManager(IOManager):
         return {"asset_key": asset_key, "status": "not_found"}
 
 
+class ModuleIOManager(IOManager):
+    """
+    IO Manager for OakVar module assets.
+    
+    Handles paths for:
+    - Module SQLite databases in data/modules/just_{module}/
+    - Converted parquet files in data/output/modules/{module}/
+    """
+    
+    def _get_asset_path(self, asset_key: str) -> Path:
+        """Resolve the path for a module asset based on its key."""
+        if asset_key.endswith("_sqlite"):
+            module = asset_key.replace("_sqlite", "")
+            return MODULES_DIR / f"just_{module}" / f"{module}.sqlite"
+        
+        # Handle longevitymap_with_ensembl specifically
+        if asset_key == "longevitymap_with_ensembl":
+            return MODULES_OUTPUT_DIR / "longevitymap" / "longevitymap_ensembl_joined.parquet"
+            
+        # Standard module assets: {module}_{type} (e.g., longevitymap_annotations)
+        parts = asset_key.split("_")
+        if len(parts) >= 2:
+            module = parts[0]
+            type_name = "_".join(parts[1:])
+            return MODULES_OUTPUT_DIR / module / f"{type_name}.parquet"
+            
+        return MODULES_OUTPUT_DIR / asset_key
+
+    def handle_output(self, context: OutputContext, obj: Any) -> None:
+        """Log where the asset was stored."""
+        if isinstance(obj, Path):
+            context.log.info(f"Module asset stored at: {obj}")
+        else:
+            context.log.info(f"Module asset materialized: {type(obj).__name__}")
+
+    def load_input(self, context: InputContext) -> Any:
+        """Load asset by returning its expected path."""
+        asset_key = context.upstream_output.asset_key.to_user_string() if context.upstream_output else "unknown"
+        path = self._get_asset_path(asset_key)
+        
+        if not path.exists():
+            raise FileNotFoundError(
+                f"Module asset not found at {path}. "
+                f"Materialize the {asset_key} asset first."
+            )
+            
+        context.log.info(f"Loading module data from: {path}")
+        return path
+
+
 @io_manager
 def ensembl_cache_io_manager() -> EnsemblCacheIOManager:
     """IO manager for Ensembl VCF/Parquet assets in cache folder."""
     return EnsemblCacheIOManager()
+
+
+@io_manager
+def module_io_manager() -> ModuleIOManager:
+    """IO manager for OakVar module assets."""
+    return ModuleIOManager()
 
 
 @io_manager

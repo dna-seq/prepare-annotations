@@ -456,7 +456,7 @@ def convert_module_weights_with_ensembl(
         # Materialize LazyFrame to temp parquet for DuckDB
         temp_dir = Path(tempfile.mkdtemp(prefix="ensembl_"))
         temp_parquet = temp_dir / "ensembl_temp.parquet"
-        ensembl_source.collect().write_parquet(temp_parquet)
+        ensembl_source.sink_parquet(temp_parquet, engine="streaming")
         ensembl_files = [str(temp_parquet)]
     else:
         ensembl_files = _resolve_ensembl_parquet_files(ensembl_source, species)

@@ -16,22 +16,6 @@ Concurrency Control:
     The following environment variables control parallelism:
     - PREPARE_ANNOTATIONS_DOWNLOAD_WORKERS: Max concurrent VCF downloads (default: 4)
     - PREPARE_ANNOTATIONS_PARQUET_WORKERS: Max concurrent parquet conversions (default: 2)
-
-Usage:
-    # Launch Dagster development server
-    uv run dagster dev -m prepare_annotations
-
-    # Materialize VCF URL discovery (registers partitions)
-    uv run dagster asset materialize --select ensembl_vcf_urls
-
-    # Materialize all VCF file downloads (all partitions)
-    uv run dagster asset materialize --select ensembl_vcf_file
-
-    # Materialize specific partition
-    uv run dagster asset materialize --select ensembl_vcf_file --partition homo_sapiens.vcf.gz
-    
-    # Materialize longevitymap module with Ensembl genotype resolution
-    uv run dagster asset materialize --select ensembl_variations_source longevitymap_weights
 """
 
 import os
@@ -46,14 +30,16 @@ from prepare_annotations.assets import (
     ensembl_all_parquet_files,
     ensembl_hf_upload,
     ensembl_variations_source,
+    longevitymap_sqlite,
     longevitymap_annotations,
     longevitymap_studies,
     longevitymap_weights,
     longevitymap_with_ensembl,
     longevitymap_hf_upload,
 )
-from prepare_annotations.dagster_io_managers import (
+from prepare_annotations.core.dagster_io_managers import (
     ensembl_cache_io_manager,
+    module_io_manager,
     huggingface_upload_io_manager,
 )
 
@@ -137,23 +123,12 @@ full_job = define_asset_job(
 # MODULE CONVERSION JOBS
 # ============================================================================
 
-# Job to convert LongevityMap module with Ensembl genotype resolution
-longevitymap_job = define_asset_job(
-    name="longevitymap",
-    description="Convert LongevityMap module to unified schema with Ensembl genotype resolution.",
+# Job to convert LongevityMap only (no upload)
+longevitymap_convert_job = define_asset_job(
+    name="longevitymap_convert",
+    description="Convert LongevityMap module to unified schema (no upload).",
     selection=AssetSelection.assets(
-        ensembl_variations_source,
-        longevitymap_annotations,
-        longevitymap_studies,
-        longevitymap_weights,
-    ),
-)
-
-# Job to create full LongevityMap with Ensembl join
-longevitymap_full_job = define_asset_job(
-    name="longevitymap_full",
-    description="Convert LongevityMap and join with full Ensembl variation data.",
-    selection=AssetSelection.assets(
+        longevitymap_sqlite,
         ensembl_variations_source,
         longevitymap_annotations,
         longevitymap_studies,
@@ -162,15 +137,17 @@ longevitymap_full_job = define_asset_job(
     ),
 )
 
-# Job to upload LongevityMap to HuggingFace Hub
-longevitymap_upload_job = define_asset_job(
-    name="longevitymap_upload",
-    description="Upload LongevityMap module to just-dna-seq/annotators on HuggingFace.",
+# Default job: download, convert, join, and upload to HuggingFace
+longevitymap_job = define_asset_job(
+    name="longevitymap",
+    description="Full LongevityMap pipeline: download SQLite, convert, join with Ensembl, upload to HuggingFace.",
     selection=AssetSelection.assets(
+        longevitymap_sqlite,
         ensembl_variations_source,
         longevitymap_annotations,
         longevitymap_studies,
         longevitymap_weights,
+        longevitymap_with_ensembl,
         longevitymap_hf_upload,
     ),
 )
@@ -191,6 +168,7 @@ defs = Definitions(
         ensembl_hf_upload,
         # Module conversion assets
         ensembl_variations_source,
+        longevitymap_sqlite,
         longevitymap_annotations,
         longevitymap_studies,
         longevitymap_weights,
@@ -205,12 +183,12 @@ defs = Definitions(
         upload_job,
         full_job,
         # Module conversion jobs
-        longevitymap_job,
-        longevitymap_full_job,
-        longevitymap_upload_job,
+        longevitymap_job,  # Default: includes upload
+        longevitymap_convert_job,  # Convert only, no upload
     ],
     resources={
         "io_manager": ensembl_cache_io_manager,
+        "module_io_manager": module_io_manager,
         "hf_upload_io_manager": huggingface_upload_io_manager,
     },
 )

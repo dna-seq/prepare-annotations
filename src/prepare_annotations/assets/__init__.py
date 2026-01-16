@@ -17,6 +17,7 @@ from prepare_annotations.assets.ensembl import (
 )
 from prepare_annotations.assets.modules import (
     ensembl_variations_source,
+    longevitymap_sqlite,
     longevitymap_annotations,
     longevitymap_studies,
     longevitymap_weights,
@@ -34,6 +35,7 @@ all_assets = [
     ensembl_all_parquet_files,
     ensembl_hf_upload,
     ensembl_variations_source,
+    longevitymap_sqlite,
     longevitymap_annotations,
     longevitymap_studies,
     longevitymap_weights,

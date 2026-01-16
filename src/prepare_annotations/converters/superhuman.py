@@ -235,13 +235,13 @@ def convert_superhuman(
         # Convert annotations
         annotations = convert_superhuman_annotations(db_path)
         annotations_path = output_dir / "annotations.parquet"
-        annotations.collect().write_parquet(annotations_path)
+        annotations.sink_parquet(annotations_path, engine="streaming")
         outputs["annotations"] = annotations_path
         
         # Convert studies
         studies = convert_superhuman_studies(db_path)
         studies_path = output_dir / "studies.parquet"
-        studies.collect().write_parquet(studies_path)
+        studies.sink_parquet(studies_path, engine="streaming")
         outputs["studies"] = studies_path
         
         # Convert weights
@@ -251,7 +251,7 @@ def convert_superhuman(
             method=method,
         )
         weights_path = output_dir / "weights.parquet"
-        weights.collect().write_parquet(weights_path)
+        weights.sink_parquet(weights_path, engine="streaming")
         outputs["weights"] = weights_path
         
         return outputs

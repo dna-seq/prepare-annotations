@@ -27,7 +27,7 @@ def hello() -> str:
 
 # Lazy imports for commonly used items
 def __getattr__(name: str):
-    """Lazy imports for backward compatibility."""
+    """Lazy imports for easy access to main entry points."""
     if name == "defs":
         from prepare_annotations.definitions import defs
         return defs

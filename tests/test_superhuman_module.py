@@ -16,7 +16,7 @@ import sqlite3
 from pathlib import Path
 
 from conftest import ensure_oakvar_module_data
-from prepare_annotations.resources import MODULES_DIR, MODULES_OUTPUT_DIR
+from prepare_annotations.core.paths import MODULES_DIR, MODULES_OUTPUT_DIR
 
 
 # Paths to data files

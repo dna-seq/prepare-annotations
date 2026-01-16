@@ -102,7 +102,12 @@ def split_variants_by_tsa(
             
             action.log(message_type="info", tsa=tsa, where=str(where))
             # Use compression level 14 for splits to get closer to level 19 size while remaining fast
-            df_tsa.sink_parquet(temp_where, compression="zstd", compression_level=14)
+            df_tsa.sink_parquet(
+                temp_where,
+                engine="streaming",
+                compression="zstd",
+                compression_level=14,
+            )
             temp_where.replace(where)
             result[tsa] = where
         

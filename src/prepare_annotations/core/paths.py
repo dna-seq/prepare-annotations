@@ -137,36 +137,6 @@ def get_default_cache_dir(name: str) -> Path:
     return path
 
 
-def get_default_input_dir(name: str) -> Path:
-    """
-    Get the default destination directory for downloads.
-
-    Note: For backwards compatibility. New code should use get_default_cache_dir.
-    Downloads are stored directly in the cache folder now.
-    """
-    return get_default_cache_dir(name)
-
-
-def get_default_interim_dir(name: str) -> Path:
-    """
-    Get the default directory for intermediate files.
-
-    Note: For backwards compatibility. Intermediate parquet files are stored
-    directly in the cache folder now.
-    """
-    return get_default_cache_dir(name)
-
-
-def get_default_output_dir(name: str) -> Path:
-    """
-    Get the default directory for final output files.
-
-    Note: For backwards compatibility. Output files (like splitted_variants)
-    are stored directly in the cache folder now.
-    """
-    return get_default_cache_dir(name)
-
-
 def get_output_dir() -> Path:
     """Get the output directory for uploads and final data."""
     env_output = os.getenv("JUST_DNA_PIPELINES_OUTPUT_DIR")
