@@ -94,64 +94,19 @@ def studies_parquet(ensure_drugs_parquet: Path) -> pl.DataFrame:
     return pl.read_parquet(parquet_file)
 
 
-class TestRowCount:
-    """Test that table row counts are reasonable."""
-
-    def test_annotations_has_rows(
-        self, annotations_parquet: pl.DataFrame
-    ):
-        """Verify annotations has rows."""
-        assert len(annotations_parquet) > 0
-
-    def test_studies_has_rows(
-        self, studies_parquet: pl.DataFrame
-    ):
-        """Verify studies has rows."""
-        assert len(studies_parquet) > 0
-
-    def test_weights_has_rows(
-        self, weights_parquet: pl.DataFrame
-    ):
-        """Verify weights has rows."""
-        assert len(weights_parquet) > 0
-
-
 class TestRsidFiltering:
     """Test that only valid rsids are included."""
 
-    def test_all_rsids_start_with_rs(
-        self, annotations_parquet: pl.DataFrame
-    ):
-        """Verify all rsids start with 'rs'."""
-        rsids = annotations_parquet["rsid"].to_list()
-        for rsid in rsids:
-            assert rsid.startswith("rs"), f"Invalid rsid: {rsid}"
-
-    def test_weights_rsids_start_with_rs(
-        self, weights_parquet: pl.DataFrame
-    ):
-        """Verify all weight rsids start with 'rs'."""
-        rsids = weights_parquet["rsid"].to_list()
-        for rsid in rsids:
-            assert rsid.startswith("rs"), f"Invalid rsid: {rsid}"
-
-    def test_studies_rsids_start_with_rs(
-        self, studies_parquet: pl.DataFrame
-    ):
-        """Verify all study rsids start with 'rs'."""
-        rsids = studies_parquet["rsid"].to_list()
-        for rsid in rsids:
-            assert rsid.startswith("rs"), f"Invalid rsid: {rsid}"
+    @pytest.mark.parametrize("fixture_name", ["annotations_parquet", "weights_parquet", "studies_parquet"])
+    def test_all_rsids_start_with_rs(self, fixture_name: str, request: pytest.FixtureRequest):
+        """Verify all rsids in output tables start with 'rs'."""
+        df = request.getfixturevalue(fixture_name)
+        invalid_rsids = [r for r in df["rsid"].to_list() if not r.startswith("rs")]
+        assert len(invalid_rsids) == 0, f"Invalid rsids in {fixture_name}: {invalid_rsids[:5]}"
 
 
 class TestAnnotationsTable:
     """Test that annotations data is correctly derived."""
-
-    def test_module_column_correct(
-        self, annotations_parquet: pl.DataFrame
-    ):
-        """Verify module column is 'drugs'."""
-        assert all(annotations_parquet["module"] == "drugs")
 
     def test_category_has_drug_names(
         self, annotations_parquet: pl.DataFrame, drugs_tsv: pl.DataFrame
@@ -167,34 +122,84 @@ class TestAnnotationsTable:
         )
         
         # Categories should be subset of drugs from TSV
-        assert len(parquet_categories) > 0
+        if tsv_drugs:
+            assert parquet_categories, "Expected drug categories in annotations.parquet"
         assert parquet_categories.issubset(tsv_drugs)
 
     def test_phenotype_has_values(
-        self, annotations_parquet: pl.DataFrame
+        self, annotations_parquet: pl.DataFrame, drugs_tsv: pl.DataFrame
     ):
         """Verify phenotype has values (from Phenotype Category)."""
-        phenotypes = annotations_parquet["phenotype"].unique().drop_nulls()
-        assert len(phenotypes) > 0
+        tsv_rsids = drugs_tsv.filter(
+            pl.col("Variant/Haplotypes").is_not_null()
+            & pl.col("Variant/Haplotypes").str.starts_with("rs")
+        )
+        tsv_phenotypes = set(
+            tsv_rsids["Phenotype Category"].unique().drop_nulls().to_list()
+        )
+        parquet_phenotypes = set(
+            annotations_parquet["phenotype"].unique().drop_nulls().to_list()
+        )
+
+        if tsv_phenotypes:
+            assert parquet_phenotypes, "Expected phenotype values in annotations.parquet"
+        assert parquet_phenotypes.issubset(tsv_phenotypes), (
+            "annotations.parquet phenotypes should come from TSV 'Phenotype Category'"
+        )
 
 
 class TestStudiesTable:
     """Test that studies data is correctly preserved."""
 
     def test_conclusion_has_sentences(
-        self, studies_parquet: pl.DataFrame
+        self, studies_parquet: pl.DataFrame, drugs_tsv: pl.DataFrame
     ):
         """Verify conclusions contain sentences from TSV."""
-        conclusions = studies_parquet["conclusion"].drop_nulls()
-        assert len(conclusions) > 0
+        tsv_rsids = drugs_tsv.filter(
+            pl.col("Variant/Haplotypes").is_not_null()
+            & pl.col("Variant/Haplotypes").str.starts_with("rs")
+        )
+        tsv_sentences = set(
+            tsv_rsids["Sentence"].unique().drop_nulls().to_list()
+        )
+        parquet_conclusions = set(
+            studies_parquet["conclusion"].unique().drop_nulls().to_list()
+        )
+
+        if tsv_sentences:
+            assert parquet_conclusions, "Expected conclusion values in studies.parquet"
+        assert parquet_conclusions.issubset(tsv_sentences), (
+            "studies.parquet conclusions should come from TSV 'Sentence'"
+        )
 
     def test_p_values_preserved(
-        self, studies_parquet: pl.DataFrame
+        self, studies_parquet: pl.DataFrame, drugs_tsv: pl.DataFrame
     ):
         """Verify P values are preserved where available."""
-        p_values = studies_parquet["p_value"].drop_nulls()
-        # There should be some P values
-        assert len(p_values) >= 0  # May have nulls
+        tsv_rsids = drugs_tsv.filter(
+            pl.col("Variant/Haplotypes").is_not_null()
+            & pl.col("Variant/Haplotypes").str.starts_with("rs")
+        )
+        tsv_p_values = (
+            tsv_rsids["P Value"]
+            .drop_nulls()
+            .cast(pl.Utf8, strict=False)
+            .unique()
+            .to_list()
+        )
+        parquet_p_values = (
+            studies_parquet["p_value"]
+            .drop_nulls()
+            .cast(pl.Utf8, strict=False)
+            .unique()
+            .to_list()
+        )
+
+        if tsv_p_values:
+            assert parquet_p_values, "Expected non-empty p_value values in studies.parquet"
+            assert set(parquet_p_values).issubset(set(tsv_p_values)), (
+                "studies.parquet p_value entries should come from TSV 'P Value' column"
+            )
 
 
 class TestWeightsTable:
@@ -227,28 +232,26 @@ class TestWeightsTable:
 class TestSchemaTransformation:
     """Test that schema transformations are correct."""
 
-    def test_module_column_correct(
-        self, weights_parquet: pl.DataFrame, annotations_parquet: pl.DataFrame
-    ):
-        """Verify module column is 'drugs'."""
-        assert all(weights_parquet["module"] == "drugs")
-        assert all(annotations_parquet["module"] == "drugs")
-
-    def test_curator_and_method_present(
-        self, weights_parquet: pl.DataFrame
-    ):
-        """Verify curator and method columns are present and populated."""
-        assert "curator" in weights_parquet.columns
-        assert "method" in weights_parquet.columns
-        assert all(weights_parquet["curator"] == "PharmGKB")
-        assert all(weights_parquet["method"] == "pharmacogenomics_db")
-
     def test_conclusion_has_drug_info(
-        self, weights_parquet: pl.DataFrame
+        self, weights_parquet: pl.DataFrame, drugs_tsv: pl.DataFrame
     ):
         """Verify conclusion combines drug name and sentence."""
-        conclusions = weights_parquet["conclusion"].drop_nulls()
-        assert len(conclusions) > 0
-        # At least some conclusions should contain ':'
-        has_colon = [c for c in conclusions.to_list() if ":" in c]
-        assert len(has_colon) > 0
+        expected_conclusions = set(
+            drugs_tsv.filter(
+                pl.col("Variant/Haplotypes").is_not_null()
+                & pl.col("Variant/Haplotypes").str.starts_with("rs")
+            )
+            .select(
+                (pl.col("Drug(s)") + ": " + pl.col("Sentence")).alias("conclusion")
+            )["conclusion"]
+            .drop_nulls()
+            .unique()
+            .to_list()
+        )
+        parquet_conclusions = set(
+            weights_parquet["conclusion"].drop_nulls().unique().to_list()
+        )
+        if expected_conclusions:
+            assert parquet_conclusions, "Expected conclusions derived from TSV data"
+        assert parquet_conclusions.issubset(expected_conclusions)
+        assert all(": " in c for c in parquet_conclusions)

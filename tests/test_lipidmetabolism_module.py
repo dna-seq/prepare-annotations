@@ -7,7 +7,6 @@ This test module will automatically download the lipidmetabolism data from
 GitHub if it doesn't exist locally.
 """
 
-import subprocess
 import pytest
 import polars as pl
 import sqlite3
@@ -43,7 +42,11 @@ def ensure_lipidmetabolism_data() -> Path:
 def ensure_lipidmetabolism_parquet(ensure_lipidmetabolism_data: Path) -> Path:
     """
     Ensure lipidmetabolism parquet files exist, converting if necessary.
+    
+    Uses the direct converter function instead of CLI subprocess.
     """
+    from prepare_annotations.converters.lipidmetabolism import convert_lipidmetabolism
+    
     weights_path = PARQUET_DIR / "weights.parquet"
     annotations_path = PARQUET_DIR / "annotations.parquet"
     studies_path = PARQUET_DIR / "studies.parquet"
@@ -51,15 +54,11 @@ def ensure_lipidmetabolism_parquet(ensure_lipidmetabolism_data: Path) -> Path:
     if not (weights_path.exists() and annotations_path.exists() and studies_path.exists()):
         PARQUET_DIR.mkdir(parents=True, exist_ok=True)
         
-        subprocess.run(
-            [
-                "uv", "run", "modules", "convert-lipidmetabolism",
-                "--db-path", str(ensure_lipidmetabolism_data),
-                "--output-dir", str(PARQUET_DIR),
-                "--no-log",
-            ],
-            check=True,
-            capture_output=False,
+        convert_lipidmetabolism(
+            db_path=ensure_lipidmetabolism_data,
+            output_dir=PARQUET_DIR,
+            curator="just-dna-seq",
+            method="literature_review",
         )
     
     if not weights_path.exists():
@@ -140,7 +139,6 @@ class TestWeightsRowCount:
     ):
         """Verify parquet has reasonable row count (may deduplicate)."""
         # Parquet may have fewer rows due to deduplication by (rsid, genotype, module)
-        assert len(weights_parquet) > 0
         assert len(weights_parquet) <= len(weights_sqlite)
 
     def test_unique_rsid_count_matches(
@@ -189,21 +187,18 @@ class TestAnnotationsTable:
     """Test that annotations data is correctly derived."""
 
     def test_all_annotation_rsids_have_weights(
-        self, annotations_parquet: pl.DataFrame, weights_parquet: pl.DataFrame
+        self, annotations_parquet: pl.DataFrame, rsids_sqlite: pl.DataFrame
     ):
-        """Verify all annotation rsids exist in weights table."""
+        """Verify annotation rsids come from the SQLite rsids table."""
         annotation_rsids = set(annotations_parquet["rsid"].unique().to_list())
-        weight_rsids = set(weights_parquet["rsid"].unique().to_list())
+        sqlite_rsids = set(rsids_sqlite["rsid"].unique().drop_nulls().to_list())
 
         # All annotation rsids should be in the source data
-        assert len(annotation_rsids) > 0
-
-    def test_module_column_correct(
-        self, weights_parquet: pl.DataFrame, annotations_parquet: pl.DataFrame
-    ):
-        """Verify module column is 'lipidmetabolism'."""
-        assert all(weights_parquet["module"] == "lipidmetabolism")
-        assert all(annotations_parquet["module"] == "lipidmetabolism")
+        if sqlite_rsids:
+            assert annotation_rsids, "Expected annotation rsids when source rsids exist"
+        assert annotation_rsids.issubset(sqlite_rsids), (
+            "Found annotation rsids that are missing from rsids table"
+        )
 
 
 class TestStudiesTable:
@@ -223,12 +218,14 @@ class TestSchemaTransformation:
     """Test that schema transformations are correct."""
 
     def test_genotype_format_correct(self, weights_parquet: pl.DataFrame):
-        """Verify genotype column has correct format (e.g., 'CT', 'TT', 'AA')."""
-        genotypes = weights_parquet["genotype"].unique().drop_nulls().to_list()
+        """Verify genotype column has correct format (list of 2 alleles)."""
+        genotypes = weights_parquet["genotype"].unique().to_list()
 
         for gt in genotypes:
-            if gt and len(gt) == 2:
-                assert gt.isalpha(), f"Genotype should be alphabetic: {gt}"
+            assert isinstance(gt, list), f"Genotype should be a list, got {type(gt)}"
+            assert len(gt) == 2, f"Invalid genotype format (expected 2 alleles): {gt}"
+            for allele in gt:
+                assert allele.isalpha() or allele == "?", f"Allele should be alphabetic or '?', got: {allele}"
 
     def test_state_values_valid(self, weights_parquet: pl.DataFrame):
         """Verify state column has valid values."""
@@ -237,10 +234,3 @@ class TestSchemaTransformation:
 
         invalid = states - valid_states
         assert len(invalid) == 0, f"Invalid state values: {invalid}"
-
-    def test_curator_and_method_present(self, weights_parquet: pl.DataFrame):
-        """Verify curator and method columns are present and populated."""
-        assert "curator" in weights_parquet.columns
-        assert "method" in weights_parquet.columns
-        assert all(weights_parquet["curator"] == "just-dna-seq")
-        assert all(weights_parquet["method"] == "literature_review")

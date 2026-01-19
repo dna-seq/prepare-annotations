@@ -30,12 +30,41 @@ from prepare_annotations.assets import (
     ensembl_all_parquet_files,
     ensembl_hf_upload,
     ensembl_variations_source,
+    # LongevityMap
     longevitymap_sqlite,
     longevitymap_annotations,
     longevitymap_studies,
     longevitymap_weights,
     longevitymap_with_ensembl,
     longevitymap_hf_upload,
+    # LipidMetabolism
+    lipidmetabolism_sqlite,
+    lipidmetabolism_annotations,
+    lipidmetabolism_studies,
+    lipidmetabolism_weights,
+    lipidmetabolism_with_ensembl,
+    lipidmetabolism_hf_upload,
+    # VO2Max
+    vo2max_sqlite,
+    vo2max_annotations,
+    vo2max_studies,
+    vo2max_weights,
+    vo2max_with_ensembl,
+    vo2max_hf_upload,
+    # Superhuman
+    superhuman_sqlite,
+    superhuman_annotations,
+    superhuman_studies,
+    superhuman_weights,
+    superhuman_with_ensembl,
+    superhuman_hf_upload,
+    # Coronary
+    coronary_sqlite,
+    coronary_annotations,
+    coronary_studies,
+    coronary_weights,
+    coronary_with_ensembl,
+    coronary_hf_upload,
 )
 from prepare_annotations.core.dagster_io_managers import (
     ensembl_cache_io_manager,
@@ -123,10 +152,23 @@ full_job = define_asset_job(
 # MODULE CONVERSION JOBS
 # ============================================================================
 
-# Job to convert LongevityMap only (no upload)
+# Convert only job: no join, no upload
 longevitymap_convert_job = define_asset_job(
     name="longevitymap_convert",
-    description="Convert LongevityMap module to unified schema (no upload).",
+    description="LongevityMap: convert to unified schema only (no join, no upload).",
+    selection=AssetSelection.assets(
+        longevitymap_sqlite,
+        ensembl_variations_source,
+        longevitymap_annotations,
+        longevitymap_studies,
+        longevitymap_weights,
+    ),
+)
+
+# Full job: convert + join with Ensembl (no upload)
+longevitymap_full_job = define_asset_job(
+    name="longevitymap_full",
+    description="LongevityMap: convert + join with full Ensembl data (no upload).",
     selection=AssetSelection.assets(
         longevitymap_sqlite,
         ensembl_variations_source,
@@ -137,10 +179,10 @@ longevitymap_convert_job = define_asset_job(
     ),
 )
 
-# Default job: download, convert, join, and upload to HuggingFace
+# Default job: full pipeline with upload to HuggingFace
 longevitymap_job = define_asset_job(
     name="longevitymap",
-    description="Full LongevityMap pipeline: download SQLite, convert, join with Ensembl, upload to HuggingFace.",
+    description="LongevityMap: full pipeline - convert, join with Ensembl, upload to HuggingFace.",
     selection=AssetSelection.assets(
         longevitymap_sqlite,
         ensembl_variations_source,
@@ -149,6 +191,296 @@ longevitymap_job = define_asset_job(
         longevitymap_weights,
         longevitymap_with_ensembl,
         longevitymap_hf_upload,
+    ),
+)
+
+
+# ============================================================================
+# LIPIDMETABOLISM JOBS
+# ============================================================================
+
+lipidmetabolism_convert_job = define_asset_job(
+    name="lipidmetabolism_convert",
+    description="LipidMetabolism: convert to unified schema only (no Ensembl join, no upload).",
+    selection=AssetSelection.assets(
+        lipidmetabolism_sqlite,
+        lipidmetabolism_annotations,
+        lipidmetabolism_studies,
+        lipidmetabolism_weights,
+    ),
+)
+
+lipidmetabolism_full_job = define_asset_job(
+    name="lipidmetabolism_full",
+    description="LipidMetabolism: convert + join with Ensembl (no upload).",
+    selection=AssetSelection.assets(
+        lipidmetabolism_sqlite,
+        ensembl_variations_source,
+        lipidmetabolism_annotations,
+        lipidmetabolism_studies,
+        lipidmetabolism_weights,
+        lipidmetabolism_with_ensembl,
+    ),
+)
+
+lipidmetabolism_job = define_asset_job(
+    name="lipidmetabolism",
+    description="LipidMetabolism: full pipeline - convert, join with Ensembl, upload to HuggingFace.",
+    selection=AssetSelection.assets(
+        lipidmetabolism_sqlite,
+        ensembl_variations_source,
+        lipidmetabolism_annotations,
+        lipidmetabolism_studies,
+        lipidmetabolism_weights,
+        lipidmetabolism_with_ensembl,
+        lipidmetabolism_hf_upload,
+    ),
+)
+
+
+# ============================================================================
+# VO2MAX JOBS
+# ============================================================================
+
+vo2max_convert_job = define_asset_job(
+    name="vo2max_convert",
+    description="VO2Max: convert to unified schema only (no Ensembl join, no upload).",
+    selection=AssetSelection.assets(
+        vo2max_sqlite,
+        vo2max_annotations,
+        vo2max_studies,
+        vo2max_weights,
+    ),
+)
+
+vo2max_full_job = define_asset_job(
+    name="vo2max_full",
+    description="VO2Max: convert + join with Ensembl (no upload).",
+    selection=AssetSelection.assets(
+        vo2max_sqlite,
+        ensembl_variations_source,
+        vo2max_annotations,
+        vo2max_studies,
+        vo2max_weights,
+        vo2max_with_ensembl,
+    ),
+)
+
+vo2max_job = define_asset_job(
+    name="vo2max",
+    description="VO2Max: full pipeline - convert, join with Ensembl, upload to HuggingFace.",
+    selection=AssetSelection.assets(
+        vo2max_sqlite,
+        ensembl_variations_source,
+        vo2max_annotations,
+        vo2max_studies,
+        vo2max_weights,
+        vo2max_with_ensembl,
+        vo2max_hf_upload,
+    ),
+)
+
+
+# ============================================================================
+# SUPERHUMAN JOBS
+# ============================================================================
+
+superhuman_convert_job = define_asset_job(
+    name="superhuman_convert",
+    description="Superhuman: convert to unified schema only (no Ensembl join, no upload).",
+    selection=AssetSelection.assets(
+        superhuman_sqlite,
+        superhuman_annotations,
+        superhuman_studies,
+        superhuman_weights,
+    ),
+)
+
+superhuman_full_job = define_asset_job(
+    name="superhuman_full",
+    description="Superhuman: convert + join with Ensembl (no upload).",
+    selection=AssetSelection.assets(
+        superhuman_sqlite,
+        ensembl_variations_source,
+        superhuman_annotations,
+        superhuman_studies,
+        superhuman_weights,
+        superhuman_with_ensembl,
+    ),
+)
+
+superhuman_job = define_asset_job(
+    name="superhuman",
+    description="Superhuman: full pipeline - convert, join with Ensembl, upload to HuggingFace.",
+    selection=AssetSelection.assets(
+        superhuman_sqlite,
+        ensembl_variations_source,
+        superhuman_annotations,
+        superhuman_studies,
+        superhuman_weights,
+        superhuman_with_ensembl,
+        superhuman_hf_upload,
+    ),
+)
+
+
+# ============================================================================
+# CORONARY JOBS
+# ============================================================================
+
+coronary_convert_job = define_asset_job(
+    name="coronary_convert",
+    description="Coronary: convert to unified schema only (no Ensembl join, no upload).",
+    selection=AssetSelection.assets(
+        coronary_sqlite,
+        coronary_annotations,
+        coronary_studies,
+        coronary_weights,
+    ),
+)
+
+coronary_full_job = define_asset_job(
+    name="coronary_full",
+    description="Coronary: convert + join with Ensembl (no upload).",
+    selection=AssetSelection.assets(
+        coronary_sqlite,
+        ensembl_variations_source,
+        coronary_annotations,
+        coronary_studies,
+        coronary_weights,
+        coronary_with_ensembl,
+    ),
+)
+
+coronary_job = define_asset_job(
+    name="coronary",
+    description="Coronary: full pipeline - convert, join with Ensembl, upload to HuggingFace.",
+    selection=AssetSelection.assets(
+        coronary_sqlite,
+        ensembl_variations_source,
+        coronary_annotations,
+        coronary_studies,
+        coronary_weights,
+        coronary_with_ensembl,
+        coronary_hf_upload,
+    ),
+)
+
+
+# ============================================================================
+# ALL MODULES JOB
+# ============================================================================
+
+all_modules_convert_job = define_asset_job(
+    name="all_modules_convert",
+    description="Convert all annotation modules to unified schema (no Ensembl join, no upload).",
+    selection=AssetSelection.assets(
+        # LongevityMap
+        longevitymap_sqlite,
+        longevitymap_annotations,
+        longevitymap_studies,
+        longevitymap_weights,
+        # LipidMetabolism
+        lipidmetabolism_sqlite,
+        lipidmetabolism_annotations,
+        lipidmetabolism_studies,
+        lipidmetabolism_weights,
+        # VO2Max
+        vo2max_sqlite,
+        vo2max_annotations,
+        vo2max_studies,
+        vo2max_weights,
+        # Superhuman
+        superhuman_sqlite,
+        superhuman_annotations,
+        superhuman_studies,
+        superhuman_weights,
+        # Coronary
+        coronary_sqlite,
+        coronary_annotations,
+        coronary_studies,
+        coronary_weights,
+    ),
+)
+
+all_modules_full_job = define_asset_job(
+    name="all_modules_full",
+    description="All modules: convert + join with Ensembl (no upload).",
+    selection=AssetSelection.assets(
+        ensembl_variations_source,
+        # LongevityMap
+        longevitymap_sqlite,
+        longevitymap_annotations,
+        longevitymap_studies,
+        longevitymap_weights,
+        longevitymap_with_ensembl,
+        # LipidMetabolism
+        lipidmetabolism_sqlite,
+        lipidmetabolism_annotations,
+        lipidmetabolism_studies,
+        lipidmetabolism_weights,
+        lipidmetabolism_with_ensembl,
+        # VO2Max
+        vo2max_sqlite,
+        vo2max_annotations,
+        vo2max_studies,
+        vo2max_weights,
+        vo2max_with_ensembl,
+        # Superhuman
+        superhuman_sqlite,
+        superhuman_annotations,
+        superhuman_studies,
+        superhuman_weights,
+        superhuman_with_ensembl,
+        # Coronary
+        coronary_sqlite,
+        coronary_annotations,
+        coronary_studies,
+        coronary_weights,
+        coronary_with_ensembl,
+    ),
+)
+
+all_modules_job = define_asset_job(
+    name="all_modules",
+    description="All modules: full pipeline - convert, join with Ensembl, upload all to HuggingFace.",
+    selection=AssetSelection.assets(
+        ensembl_variations_source,
+        # LongevityMap
+        longevitymap_sqlite,
+        longevitymap_annotations,
+        longevitymap_studies,
+        longevitymap_weights,
+        longevitymap_with_ensembl,
+        longevitymap_hf_upload,
+        # LipidMetabolism
+        lipidmetabolism_sqlite,
+        lipidmetabolism_annotations,
+        lipidmetabolism_studies,
+        lipidmetabolism_weights,
+        lipidmetabolism_with_ensembl,
+        lipidmetabolism_hf_upload,
+        # VO2Max
+        vo2max_sqlite,
+        vo2max_annotations,
+        vo2max_studies,
+        vo2max_weights,
+        vo2max_with_ensembl,
+        vo2max_hf_upload,
+        # Superhuman
+        superhuman_sqlite,
+        superhuman_annotations,
+        superhuman_studies,
+        superhuman_weights,
+        superhuman_with_ensembl,
+        superhuman_hf_upload,
+        # Coronary
+        coronary_sqlite,
+        coronary_annotations,
+        coronary_studies,
+        coronary_weights,
+        coronary_with_ensembl,
+        coronary_hf_upload,
     ),
 )
 
@@ -168,12 +500,41 @@ defs = Definitions(
         ensembl_hf_upload,
         # Module conversion assets
         ensembl_variations_source,
+        # LongevityMap
         longevitymap_sqlite,
         longevitymap_annotations,
         longevitymap_studies,
         longevitymap_weights,
         longevitymap_with_ensembl,
         longevitymap_hf_upload,
+        # LipidMetabolism
+        lipidmetabolism_sqlite,
+        lipidmetabolism_annotations,
+        lipidmetabolism_studies,
+        lipidmetabolism_weights,
+        lipidmetabolism_with_ensembl,
+        lipidmetabolism_hf_upload,
+        # VO2Max
+        vo2max_sqlite,
+        vo2max_annotations,
+        vo2max_studies,
+        vo2max_weights,
+        vo2max_with_ensembl,
+        vo2max_hf_upload,
+        # Superhuman
+        superhuman_sqlite,
+        superhuman_annotations,
+        superhuman_studies,
+        superhuman_weights,
+        superhuman_with_ensembl,
+        superhuman_hf_upload,
+        # Coronary
+        coronary_sqlite,
+        coronary_annotations,
+        coronary_studies,
+        coronary_weights,
+        coronary_with_ensembl,
+        coronary_hf_upload,
     ],
     jobs=[
         # Ensembl VCF pipeline jobs
@@ -182,9 +543,30 @@ defs = Definitions(
         convert_job,
         upload_job,
         full_job,
-        # Module conversion jobs
-        longevitymap_job,  # Default: includes upload
-        longevitymap_convert_job,  # Convert only, no upload
+        # LongevityMap jobs
+        longevitymap_job,  # Default: full pipeline with upload
+        longevitymap_full_job,  # Convert + join (no upload)
+        longevitymap_convert_job,  # Convert only (no join, no upload)
+        # LipidMetabolism jobs
+        lipidmetabolism_job,  # Full pipeline with upload
+        lipidmetabolism_full_job,  # Convert + join (no upload)
+        lipidmetabolism_convert_job,  # Convert only (no join, no upload)
+        # VO2Max jobs
+        vo2max_job,  # Full pipeline with upload
+        vo2max_full_job,  # Convert + join (no upload)
+        vo2max_convert_job,  # Convert only (no join, no upload)
+        # Superhuman jobs
+        superhuman_job,  # Full pipeline with upload
+        superhuman_full_job,  # Convert + join (no upload)
+        superhuman_convert_job,  # Convert only (no join, no upload)
+        # Coronary jobs
+        coronary_job,  # Full pipeline with upload
+        coronary_full_job,  # Convert + join (no upload)
+        coronary_convert_job,  # Convert only (no join, no upload)
+        # All modules jobs
+        all_modules_job,  # Full pipeline with upload
+        all_modules_full_job,  # Convert + join (no upload)
+        all_modules_convert_job,  # Convert only (no join, no upload)
     ],
     resources={
         "io_manager": ensembl_cache_io_manager,

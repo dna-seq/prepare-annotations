@@ -34,15 +34,14 @@ The primary entry points are `dagster-ensembl` for running jobs and `dagster-ui`
 # Run the full Ensembl pipeline (download → convert → upload)
 uv run dagster-ensembl
 
+# Run the LongevityMap pipeline (convert → join with Ensembl → upload)
+uv run prepare longevitymap
+
 # Start the Dagster UI for monitoring and lineage visualization
 uv run dagster-ui
 
 # Run for a specific species
 uv run dagster-ensembl --species mus_musculus
-
-# Run specific jobs (prepare, download, convert, upload, longevitymap)
-uv run prepare job download
-uv run prepare job convert
 ```
 
 ### Advanced Operations
@@ -78,7 +77,7 @@ The package follows Dagster best practices with utilities organized in subpackag
 ```
 src/prepare_annotations/
 ├── definitions.py          # Main Dagster definitions (assets, jobs, resources)
-├── pipelines.py            # Standalone API (PreparationPipelines)
+├── pipelines.py            # Standalone API for ClinVar, dbSNP, gnomAD (non-Dagster)
 ├── cli.py                  # Typer CLI entrypoint
 │
 ├── core/                   # Core utilities

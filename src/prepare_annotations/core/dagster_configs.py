@@ -158,3 +158,123 @@ class AnnotatorsUploadConfig(Config):
     token: Optional[str] = None
     # Path prefix in the repo (module folders go under this)
     path_prefix: str = "data"
+
+
+# ============================================================================
+# ADDITIONAL MODULE CONFIGS
+# ============================================================================
+
+
+class LipidMetabolismSourceConfig(Config):
+    """Configuration for downloading LipidMetabolism SQLite from GitHub."""
+    
+    github_repo: str = "dna-seq/just_lipidmetabolism"
+    file_path: str = "data/lipid_metabolism.sqlite"
+    ref: str = "main"
+    force_download: bool = False
+    
+    @property
+    def download_url(self) -> str:
+        """Get the raw GitHub download URL."""
+        return f"https://github.com/{self.github_repo}/raw/{self.ref}/{self.file_path}"
+
+
+class LipidMetabolismConfig(Config):
+    """Configuration for LipidMetabolism module conversion."""
+    
+    module_name: str = "lipidmetabolism"
+    curator: str = "Olga Borysova"
+    method: str = "literature_review"
+    output_dir: Optional[str] = None
+
+
+class VO2MaxSourceConfig(Config):
+    """Configuration for downloading VO2Max SQLite from GitHub."""
+    
+    github_repo: str = "dna-seq/just_vo2max"
+    file_path: str = "data/vo2max.sqlite"
+    ref: str = "main"
+    force_download: bool = False
+    
+    @property
+    def download_url(self) -> str:
+        """Get the raw GitHub download URL."""
+        return f"https://github.com/{self.github_repo}/raw/{self.ref}/{self.file_path}"
+
+
+class VO2MaxConfig(Config):
+    """Configuration for VO2Max module conversion."""
+    
+    module_name: str = "vo2max"
+    curator: str = "Olga Borysova"
+    method: str = "literature_review"
+    output_dir: Optional[str] = None
+
+
+class SuperhumanSourceConfig(Config):
+    """Configuration for downloading Superhuman SQLite from GitHub."""
+    
+    github_repo: str = "dna-seq/just_superhuman"
+    file_path: str = "data/superhuman.sqlite"
+    ref: str = "main"
+    force_download: bool = False
+    
+    @property
+    def download_url(self) -> str:
+        """Get the raw GitHub download URL."""
+        return f"https://github.com/{self.github_repo}/raw/{self.ref}/{self.file_path}"
+
+
+class SuperhumanConfig(Config):
+    """Configuration for Superhuman module conversion."""
+    
+    module_name: str = "superhuman"
+    curator: str = "Olga Borysova"
+    method: str = "literature_review"
+    output_dir: Optional[str] = None
+
+
+class CoronarySourceConfig(Config):
+    """Configuration for downloading Coronary SQLite from GitHub."""
+    
+    github_repo: str = "dna-seq/just_coronary"
+    file_path: str = "data/coronary.sqlite"
+    ref: str = "master"
+    force_download: bool = False
+    
+    @property
+    def download_url(self) -> str:
+        """Get the raw GitHub download URL."""
+        return f"https://github.com/{self.github_repo}/raw/{self.ref}/{self.file_path}"
+
+
+class CoronaryConfig(Config):
+    """Configuration for Coronary module conversion."""
+    
+    module_name: str = "coronary"
+    curator: str = "Olga Borysova"
+    method: str = "gwas_literature"
+    output_dir: Optional[str] = None
+
+
+class DrugsSourceConfig(Config):
+    """Configuration for downloading Drugs TSV from GitHub."""
+    
+    github_repo: str = "dna-seq/just_drugs"
+    file_path: str = "annotation_tab.tsv"
+    ref: str = "main"
+    force_download: bool = False
+    
+    @property
+    def download_url(self) -> str:
+        """Get the raw GitHub download URL."""
+        return f"https://github.com/{self.github_repo}/raw/{self.ref}/{self.file_path}"
+
+
+class DrugsConfig(Config):
+    """Configuration for Drugs module conversion."""
+    
+    module_name: str = "drugs"
+    curator: str = "PharmGKB"
+    method: str = "pharmacogenomics_db"
+    output_dir: Optional[str] = None

@@ -8,7 +8,7 @@ The package follows Dagster best practices with utilities organized in subpackag
 
 - `src/prepare_annotations/`: Main package
   - `definitions.py`: **Main Dagster definitions** (assets, jobs, resources)
-  - `pipelines.py`: **Standalone API** (PreparationPipelines class)
+  - `pipelines.py`: **Standalone API** for ClinVar, dbSNP, gnomAD (non-Dagster sources)
   - `cli.py`: Main Typer CLI entrypoint
   
   - `core/`: Core utilities
@@ -88,7 +88,7 @@ These pipelines are Dagster-first. Follow these rules to avoid the issues we alr
 
 - Do not use `dagster job execute` or other deprecated CLI for orchestration.
 - Prefer Python API: `materialize()` for assets, `execute_job()` for non-partitioned jobs.
-- If CLI is needed, use Dagster dev server only (`uv run dagster dev -m prepare_annotations`).
+- If CLI is needed, use Dagster dev server only (`uv run dagster dev -m prepare_annotations.definitions`).
 
 ### 2) Dynamic partitions must be explicit
 
@@ -140,14 +140,15 @@ Do not upload temp files. Filter out:
 ### Primary Dagster Pipelines (Recommended)
 
 - `uv run dagster-ensembl`: Run the full Ensembl pipeline (download, convert, upload).
-- `uv run dagster-ensembl ui`: Launch Dagster UI for Ensembl pipelines.
-- `uv run dagster-ui`: General Dagster development server entrypoint.
+- `uv run prepare longevitymap`: Run the LongevityMap pipeline (convert, join with Ensembl, upload).
+- `uv run dagster-ui`: Launch Dagster UI for monitoring and lineage visualization.
 
 ### OakVar Module Management
 
 - `uv run modules data --repo dna-seq/just_longevitymap`: Download module data files.
 - `uv run modules clone --repo dna-seq/just_longevitymap`: Clone full module repository.
-- `uv run modules convert-longevitymap`: Convert LongevityMap to unified annotation schema.
+- `uv run prepare longevitymap`: Run full Dagster pipeline (convert + Ensembl join + upload).
+- `uv run prepare longevitymap --convert-only`: Convert only (no Ensembl join, no upload).
 
 ### Unified Annotation Schema
 
@@ -192,6 +193,67 @@ Datasets are typically uploaded to the `just-dna-seq` organization on Hugging Fa
 - **Auto-download**: Tests automatically download required data from GitHub
 - **Validation**: Comprehensive checks ensuring data integrity during conversion
 
+### Test Generation Guidelines (Universal)
+
+- **Real data + ground truth**: Use actual source data, auto-download if needed, and compute expected values at runtime.
+- **Deterministic coverage**: Use fixed seeds or explicit filters; include representative and edge cases.
+- **Meaningful assertions**: Prefer relationships and aggregates over existence-only checks.
+
+#### What to Validate
+
+- **Counts & aggregates**: Row counts, sums/min/max/means, distinct counts, and distributions.
+- **Joins**: Pre/post counts, key coverage, cardinality expectations, nulls introduced by outer joins, and a few spot-checks.
+- **Transformations**: Round-trip survival, subset/superset semantics, value mapping, key preservation.
+- **Data quality**: Format/range checks, outliers, malformed entries, duplicates, referential integrity.
+
+#### Avoiding LLM "Reward Hacking" in Tests
+
+- **Runtime ground truth**: Query source data at test time instead of hardcoding expectations.
+- **Seeded sampling**: Validate random records with a fixed seed, not just known examples.
+- **Negative & boundary tests**: Ensure invalid inputs fail; probe min/max, empty, unicode.
+- **Derived assertions**: Test relationships (e.g., input vs output counts), not magic numbers.
+- **Allow expected failures**: Use `pytest.mark.xfail` for known data quality issues with a clear reason.
+
+#### Test Structure Best Practices
+
+- **Parameterize over duplicate**: If testing the same logic on multiple outputs, use `@pytest.mark.parametrize` instead of copy-pasting tests.
+- **Set equality over counts**: Prefer `assert set_a == set_b` over `assert len(set_a) == 270` - set comparison catches both missing and extra values.
+- **Delete redundant tests**: If test A (e.g., set equality) fully covers test B (e.g., count check), keep only test A.
+- **Domain constants are OK**: Hardcoding expected enum values or well-known constants from specs is fine; hardcoding row counts or unique counts derived from data inspection is not.
+
+#### Anti-Patterns to Avoid
+
+- Testing only "happy path" with trivial data
+- Hardcoding expected values that drift from source (use derived ground truth)
+- Mocking data transformations instead of running real pipelines
+- Ignoring edge cases (nulls, empty strings, boundary values, unicode, malformed data)
+
+**Meaningless Tests to Avoid** (common AI-generated anti-patterns):
+
+```python
+# BAD: Existence-only checks as the sole validation
+assert "name" in df.columns
+assert len(df) > 0
+
+# BAD: Hardcoded counts derived from data inspection
+assert len(source_ids) == 270  # will break when source changes
+
+# BAD: Redundant with set equality test
+assert len(output_cats) == 12  # already covered by subset check
+
+# ACCEPTABLE: Required columns as prerequisites
+required_cols = {"id", "name", "value"}
+assert required_cols.issubset(df.columns)
+
+# GOOD: Set equality from source data
+source_ids = set(source_df["id"].unique().drop_nulls().to_list())
+output_ids = set(output_df["id"].unique().drop_nulls().to_list())
+assert source_ids == output_ids
+
+# GOOD: Domain knowledge constants (from spec, not data inspection)
+assert valid_states == {"active", "inactive", "pending"}  # from API spec
+```
+
 ### Running Tests
 
 ```bash
@@ -216,29 +278,29 @@ These fixtures are automatically used by test modules to ensure data availabilit
 
 ### Example: LongevityMap Validation
 
-The `test_longevitymap_module.py` includes 47 tests validating:
+The `test_longevitymap_module.py` validates conversion integrity:
 
-1. **Weights Table** (1043 rows, 528 variants)
-   - Row counts match between SQLite and Parquet
-   - Weight values preserved (sum, min, max, mean)
-   - Per-rsid weight sums match
-   - Negative (risk) weights correctly identified
+1. **Weights Table**
+   - Row counts: parquet ≥ sqlite (due to genotype expansion)
+   - Unique rsid counts match between formats
+   - Weight values preserved (min/max match, all unique values present)
+   - Per-rsid weight sets match (not sums, due to expansion)
 
 2. **APOE Variants** (Critical longevity markers)
-   - rs7412 (APOE e2): protective weights
-   - rs429358 (APOE e4): risk weights
+   - rs7412 (APOE e2): expected protective weight set `{0.5, 1.0}`
+   - rs429358 (APOE e4): expected risk weight set `{-0.5, -1.0}`
 
 3. **Schema Transformations**
-   - Genotype format (het → CT, hom → TT)
-   - State values (protective/risk)
-   - Module column correctness
+   - Genotype format: list of 2 alleles, alphabetically sorted
+   - State values: valid enum (`protective`, `risk`, `alt`, `ref`)
+   - Module column: all rows have `"longevitymap"`
 
 4. **Studies & Annotations**
-   - All PMIDs preserved (270 unique)
-   - Categories preserved (12 categories)
-   - Populations preserved (81 populations)
+   - All PMIDs: set equality between sqlite and parquet
+   - Categories: parquet subset of sqlite categories
+   - Populations: parquet subset of sqlite populations
 
 Tests automatically:
 1. Download SQLite from `dna-seq/just_longevitymap` if missing
 2. Convert to parquet if needed
-3. Validate data integrity
+3. Validate data integrity via source comparison (not hardcoded counts)

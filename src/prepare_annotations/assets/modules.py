@@ -31,13 +31,38 @@ from prepare_annotations.core.dagster_configs import (
     EnsemblSourceConfig,
     LongevityMapSourceConfig,
     LongevityMapConfig,
+    LipidMetabolismSourceConfig,
+    LipidMetabolismConfig,
+    VO2MaxSourceConfig,
+    VO2MaxConfig,
+    SuperhumanSourceConfig,
+    SuperhumanConfig,
+    CoronarySourceConfig,
+    CoronaryConfig,
+    DrugsSourceConfig,
+    DrugsConfig,
     AnnotatorsUploadConfig,
     DuckDBConfig,
 )
-from prepare_annotations.converters import convert_module_weights_with_ensembl
 from prepare_annotations.converters import (
+    convert_module_weights_with_ensembl,
     convert_longevitymap_annotations,
     convert_longevitymap_studies,
+    convert_lipidmetabolism_annotations,
+    convert_lipidmetabolism_studies,
+    convert_lipidmetabolism_weights,
+    convert_vo2max_annotations,
+    convert_vo2max_studies,
+    convert_vo2max_weights,
+    convert_superhuman_annotations,
+    convert_superhuman_studies,
+    convert_superhuman_weights,
+    convert_coronary_annotations,
+    convert_coronary_studies,
+    convert_coronary_weights,
+    convert_drugs_annotations,
+    convert_drugs_studies,
+    convert_drugs_weights,
 )
 
 
@@ -455,7 +480,7 @@ def longevitymap_with_ensembl(
     
     with start_action(action_type="join_longevitymap_ensembl") as action:
         ensembl_files = resolve_ensembl_parquet_files_from_source(ensembl_variations_source)
-        row_count = join_longevitymap_with_ensembl_duckdb(
+        row_count = join_weights_with_ensembl_duckdb(
             weights_path=Path(longevitymap_weights),
             ensembl_files=ensembl_files,
             output_path=output_path,
@@ -486,14 +511,14 @@ def _duckdb_quote_path(value: str) -> str:
     return value.replace("'", "''")
 
 
-def join_longevitymap_with_ensembl_duckdb(
+def join_weights_with_ensembl_duckdb(
     *,
     weights_path: Path,
     ensembl_files: Sequence[str],
     output_path: Path,
     duckdb_config: DuckDBConfig,
 ) -> int:
-    """Join LongevityMap weights with Ensembl data using DuckDB."""
+    """Join module weights with Ensembl data using DuckDB."""
     if not ensembl_files:
         raise FileNotFoundError("No Ensembl parquet files provided for join")
 
@@ -534,7 +559,19 @@ def join_longevitymap_with_ensembl_duckdb(
                 FROM read_parquet({ensembl_list_sql})
             ),
             weights_exploded AS (
-                SELECT *, UNNEST(genotype) AS allele
+                SELECT 
+                    *,
+                    UNNEST(genotype) AS allele,
+                    -- Compute complement for strand normalization (A<->T, C<->G)
+                    UNNEST(list_transform(genotype, a -> 
+                        CASE a 
+                            WHEN 'A' THEN 'T' 
+                            WHEN 'T' THEN 'A' 
+                            WHEN 'C' THEN 'G' 
+                            WHEN 'G' THEN 'C' 
+                            ELSE a 
+                        END
+                    )) AS allele_complement
                 FROM weights
             ),
             joined AS (
@@ -554,6 +591,9 @@ def join_longevitymap_with_ensembl_duckdb(
                 JOIN ensembl e ON e.id = w.rsid
                 WHERE w.allele = e.ref
                    OR list_contains(COALESCE(e.alts, CAST([] AS VARCHAR[])), w.allele)
+                   -- Strand normalization: also match complement alleles
+                   OR w.allele_complement = e.ref
+                   OR list_contains(COALESCE(e.alts, CAST([] AS VARCHAR[])), w.allele_complement)
             )
             SELECT
                 rsid,
@@ -803,15 +843,1080 @@ If you use this data, please cite the original sources:
 
 
 # ============================================================================
+# LIPIDMETABOLISM ASSETS
+# ============================================================================
+
+
+@asset(
+    description="LipidMetabolism SQLite database downloaded from GitHub.",
+    compute_kind="download",
+    io_manager_key="module_io_manager",
+    metadata={
+        "format": "sqlite",
+        "source": "github",
+        "repo": "dna-seq/just_lipidmetabolism",
+    },
+)
+def lipidmetabolism_sqlite(
+    context: AssetExecutionContext,
+    config: LipidMetabolismSourceConfig,
+) -> Output[Path]:
+    """Download LipidMetabolism SQLite database from GitHub."""
+    logger = context.log
+    output_path = MODULES_DIR / "just_lipidmetabolism" / "lipid_metabolism.sqlite"
+    
+    if output_path.exists() and not config.force_download:
+        size_mb = output_path.stat().st_size / (1024 * 1024)
+        logger.info(f"Using cached SQLite: {output_path} ({size_mb:.2f} MB)")
+        return Output(
+            output_path,
+            metadata={
+                "source": MetadataValue.text("cached"),
+                "path": MetadataValue.path(str(output_path)),
+                "size_mb": MetadataValue.float(size_mb),
+            },
+        )
+    
+    url = config.download_url
+    logger.info(f"Downloading LipidMetabolism from {url}")
+    
+    with start_action(action_type="download_lipidmetabolism_sqlite", url=url):
+        _download_file_with_progress(url, output_path, logger)
+        size_mb = output_path.stat().st_size / (1024 * 1024)
+    
+    return Output(
+        output_path,
+        metadata={
+            "source": MetadataValue.text("github"),
+            "url": MetadataValue.url(url),
+            "path": MetadataValue.path(str(output_path)),
+            "size_mb": MetadataValue.float(size_mb),
+        },
+    )
+
+
+def get_lipidmetabolism_output_dir(config: LipidMetabolismConfig) -> Path:
+    """Resolve the output directory for LipidMetabolism conversion."""
+    if config.output_dir:
+        return Path(config.output_dir)
+    return MODULES_OUTPUT_DIR / config.module_name
+
+
+@asset(
+    description="LipidMetabolism annotations converted to unified schema.",
+    compute_kind="conversion",
+    io_manager_key="module_io_manager",
+    metadata={"schema": "rsid, module, gene, phenotype, category", "format": "parquet"},
+    op_tags={"dagster/concurrency_key": "module_conversion"},
+)
+def lipidmetabolism_annotations(
+    context: AssetExecutionContext,
+    lipidmetabolism_sqlite: Path,
+    config: LipidMetabolismConfig,
+) -> Output[Path]:
+    """Convert LipidMetabolism to annotations.parquet."""
+    logger = context.log
+    output_dir = get_lipidmetabolism_output_dir(config)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / "annotations.parquet"
+    
+    logger.info(f"Converting annotations from {lipidmetabolism_sqlite}")
+    
+    with start_action(action_type="convert_lipidmetabolism_annotations"):
+        annotations = convert_lipidmetabolism_annotations(lipidmetabolism_sqlite)
+        annotations.sink_parquet(output_path, engine="streaming")
+    
+    row_count = pl.scan_parquet(output_path).select(pl.len()).collect().item()
+    logger.info(f"Wrote {row_count} annotations to {output_path}")
+    
+    return Output(
+        output_path,
+        metadata={
+            "row_count": MetadataValue.int(row_count),
+            "output_path": MetadataValue.path(str(output_path)),
+            "module": MetadataValue.text(config.module_name),
+        },
+    )
+
+
+@asset(
+    description="LipidMetabolism studies converted to unified schema.",
+    compute_kind="conversion",
+    io_manager_key="module_io_manager",
+    metadata={"schema": "rsid, module, pmid, population, p_value, conclusion, study_design", "format": "parquet"},
+    op_tags={"dagster/concurrency_key": "module_conversion"},
+)
+def lipidmetabolism_studies(
+    context: AssetExecutionContext,
+    lipidmetabolism_sqlite: Path,
+    config: LipidMetabolismConfig,
+) -> Output[Path]:
+    """Convert LipidMetabolism to studies.parquet."""
+    logger = context.log
+    output_dir = get_lipidmetabolism_output_dir(config)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / "studies.parquet"
+    
+    logger.info(f"Converting studies from {lipidmetabolism_sqlite}")
+    
+    with start_action(action_type="convert_lipidmetabolism_studies"):
+        studies = convert_lipidmetabolism_studies(lipidmetabolism_sqlite)
+        studies.sink_parquet(output_path, engine="streaming")
+    
+    row_count = pl.scan_parquet(output_path).select(pl.len()).collect().item()
+    logger.info(f"Wrote {row_count} studies to {output_path}")
+    
+    return Output(
+        output_path,
+        metadata={
+            "row_count": MetadataValue.int(row_count),
+            "output_path": MetadataValue.path(str(output_path)),
+            "module": MetadataValue.text(config.module_name),
+        },
+    )
+
+
+@asset(
+    description="LipidMetabolism weights converted to unified schema.",
+    compute_kind="conversion",
+    io_manager_key="module_io_manager",
+    metadata={"schema": "rsid, genotype, module, weight, state, priority, conclusion, curator, method", "format": "parquet"},
+    op_tags={"dagster/concurrency_key": "module_conversion"},
+)
+def lipidmetabolism_weights(
+    context: AssetExecutionContext,
+    lipidmetabolism_sqlite: Path,
+    config: LipidMetabolismConfig,
+) -> Output[Path]:
+    """Convert LipidMetabolism to weights.parquet."""
+    logger = context.log
+    output_dir = get_lipidmetabolism_output_dir(config)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / "weights.parquet"
+    
+    logger.info(f"Converting weights from {lipidmetabolism_sqlite}")
+    
+    with start_action(action_type="convert_lipidmetabolism_weights"):
+        weights = convert_lipidmetabolism_weights(
+            lipidmetabolism_sqlite,
+            curator=config.curator,
+            method=config.method,
+        )
+        weights.sink_parquet(output_path, engine="streaming")
+    
+    row_count = pl.scan_parquet(output_path).select(pl.len()).collect().item()
+    logger.info(f"Wrote {row_count} weights to {output_path}")
+    
+    return Output(
+        output_path,
+        metadata={
+            "row_count": MetadataValue.int(row_count),
+            "output_path": MetadataValue.path(str(output_path)),
+            "module": MetadataValue.text(config.module_name),
+            "curator": MetadataValue.text(config.curator),
+        },
+    )
+
+
+@asset(
+    description="LipidMetabolism weights joined with Ensembl variation data.",
+    compute_kind="join",
+    io_manager_key="module_io_manager",
+    metadata={"format": "parquet", "join_type": "inner"},
+    op_tags={"dagster/concurrency_key": "ensembl_join"},
+)
+def lipidmetabolism_with_ensembl(
+    context: AssetExecutionContext,
+    ensembl_variations_source: str,
+    lipidmetabolism_weights: Path,
+    config: LipidMetabolismConfig,
+) -> Output[Path]:
+    """Join LipidMetabolism weights with Ensembl variation data for chromosomal positions and ClinVar."""
+    logger = context.log
+    output_dir = get_lipidmetabolism_output_dir(config)
+    output_path = output_dir / "lipidmetabolism_ensembl_joined.parquet"
+    
+    logger.info("Joining LipidMetabolism weights with Ensembl variations")
+    
+    with start_action(action_type="join_lipidmetabolism_ensembl") as action:
+        ensembl_files = resolve_ensembl_parquet_files_from_source(ensembl_variations_source)
+        row_count = join_weights_with_ensembl_duckdb(
+            weights_path=Path(lipidmetabolism_weights),
+            ensembl_files=ensembl_files,
+            output_path=output_path,
+            duckdb_config=DuckDBConfig(),
+        )
+        action.log(message_type="info", step="joined_written", path=str(output_path), row_count=row_count)
+    
+    row_count = pl.scan_parquet(output_path).select(pl.len()).collect().item()
+    logger.info(f"Wrote {row_count} joined rows to {output_path}")
+    
+    return Output(output_path, metadata={"row_count": MetadataValue.int(row_count), "output_path": MetadataValue.path(str(output_path))})
+
+
+@asset(
+    description="Upload LipidMetabolism module parquet files to HuggingFace Hub.",
+    compute_kind="upload",
+    io_manager_key="hf_upload_io_manager",
+    metadata={"destination": "HuggingFace Hub", "repo": "just-dna-seq/annotators"},
+)
+def lipidmetabolism_hf_upload(
+    context: AssetExecutionContext,
+    lipidmetabolism_annotations: Path,
+    lipidmetabolism_studies: Path,
+    lipidmetabolism_with_ensembl: Path,
+    config: AnnotatorsUploadConfig,
+) -> Output[dict]:
+    """Upload LipidMetabolism parquet files to HuggingFace Hub."""
+    from prepare_annotations.huggingface.uploader import upload_files_batch
+    
+    logger = context.log
+    
+    parquet_files = [lipidmetabolism_annotations, lipidmetabolism_studies, lipidmetabolism_with_ensembl]
+    path_in_repos = [
+        f"{config.path_prefix}/lipidmetabolism/annotations.parquet",
+        f"{config.path_prefix}/lipidmetabolism/studies.parquet",
+        f"{config.path_prefix}/lipidmetabolism/weights.parquet",
+    ]
+    
+    logger.info(f"Uploading {len(parquet_files)} files to {config.repo_id}")
+    
+    with start_action(action_type="upload_lipidmetabolism_to_hf", repo_id=config.repo_id):
+        result = upload_files_batch(
+            parquet_files=parquet_files,
+            repo_id=config.repo_id,
+            path_in_repos=path_in_repos,
+            repo_type="dataset",
+            token=config.token,
+            commit_message="Update lipidmetabolism module",
+        )
+    
+    logger.info(f"Upload complete: {result.num_uploaded} uploaded, {result.num_skipped} skipped")
+    
+    return Output(
+        {"repo_id": config.repo_id, "num_uploaded": result.num_uploaded, "num_skipped": result.num_skipped},
+        metadata={
+            "repo_id": MetadataValue.text(config.repo_id),
+            "num_uploaded": MetadataValue.int(result.num_uploaded),
+            "num_skipped": MetadataValue.int(result.num_skipped),
+            "url": MetadataValue.url(f"https://huggingface.co/datasets/{config.repo_id}"),
+        },
+    )
+
+
+# ============================================================================
+# VO2MAX ASSETS
+# ============================================================================
+
+
+@asset(
+    description="VO2Max SQLite database downloaded from GitHub.",
+    compute_kind="download",
+    io_manager_key="module_io_manager",
+    metadata={"format": "sqlite", "source": "github", "repo": "dna-seq/just_vo2max"},
+)
+def vo2max_sqlite(
+    context: AssetExecutionContext,
+    config: VO2MaxSourceConfig,
+) -> Output[Path]:
+    """Download VO2Max SQLite database from GitHub."""
+    logger = context.log
+    output_path = MODULES_DIR / "just_vo2max" / "vo2max.sqlite"
+    
+    if output_path.exists() and not config.force_download:
+        size_mb = output_path.stat().st_size / (1024 * 1024)
+        logger.info(f"Using cached SQLite: {output_path} ({size_mb:.2f} MB)")
+        return Output(
+            output_path,
+            metadata={
+                "source": MetadataValue.text("cached"),
+                "path": MetadataValue.path(str(output_path)),
+                "size_mb": MetadataValue.float(size_mb),
+            },
+        )
+    
+    url = config.download_url
+    logger.info(f"Downloading VO2Max from {url}")
+    
+    with start_action(action_type="download_vo2max_sqlite", url=url):
+        _download_file_with_progress(url, output_path, logger)
+        size_mb = output_path.stat().st_size / (1024 * 1024)
+    
+    return Output(
+        output_path,
+        metadata={
+            "source": MetadataValue.text("github"),
+            "url": MetadataValue.url(url),
+            "path": MetadataValue.path(str(output_path)),
+            "size_mb": MetadataValue.float(size_mb),
+        },
+    )
+
+
+def get_vo2max_output_dir(config: VO2MaxConfig) -> Path:
+    """Resolve the output directory for VO2Max conversion."""
+    if config.output_dir:
+        return Path(config.output_dir)
+    return MODULES_OUTPUT_DIR / config.module_name
+
+
+@asset(
+    description="VO2Max annotations converted to unified schema.",
+    compute_kind="conversion",
+    io_manager_key="module_io_manager",
+    metadata={"schema": "rsid, module, gene, phenotype, category", "format": "parquet"},
+    op_tags={"dagster/concurrency_key": "module_conversion"},
+)
+def vo2max_annotations(
+    context: AssetExecutionContext,
+    vo2max_sqlite: Path,
+    config: VO2MaxConfig,
+) -> Output[Path]:
+    """Convert VO2Max to annotations.parquet."""
+    logger = context.log
+    output_dir = get_vo2max_output_dir(config)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / "annotations.parquet"
+    
+    logger.info(f"Converting annotations from {vo2max_sqlite}")
+    
+    with start_action(action_type="convert_vo2max_annotations"):
+        annotations = convert_vo2max_annotations(vo2max_sqlite)
+        annotations.sink_parquet(output_path, engine="streaming")
+    
+    row_count = pl.scan_parquet(output_path).select(pl.len()).collect().item()
+    logger.info(f"Wrote {row_count} annotations to {output_path}")
+    
+    return Output(
+        output_path,
+        metadata={
+            "row_count": MetadataValue.int(row_count),
+            "output_path": MetadataValue.path(str(output_path)),
+            "module": MetadataValue.text(config.module_name),
+        },
+    )
+
+
+@asset(
+    description="VO2Max studies converted to unified schema.",
+    compute_kind="conversion",
+    io_manager_key="module_io_manager",
+    metadata={"schema": "rsid, module, pmid, population, p_value, conclusion, study_design", "format": "parquet"},
+    op_tags={"dagster/concurrency_key": "module_conversion"},
+)
+def vo2max_studies(
+    context: AssetExecutionContext,
+    vo2max_sqlite: Path,
+    config: VO2MaxConfig,
+) -> Output[Path]:
+    """Convert VO2Max to studies.parquet."""
+    logger = context.log
+    output_dir = get_vo2max_output_dir(config)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / "studies.parquet"
+    
+    logger.info(f"Converting studies from {vo2max_sqlite}")
+    
+    with start_action(action_type="convert_vo2max_studies"):
+        studies = convert_vo2max_studies(vo2max_sqlite)
+        studies.sink_parquet(output_path, engine="streaming")
+    
+    row_count = pl.scan_parquet(output_path).select(pl.len()).collect().item()
+    logger.info(f"Wrote {row_count} studies to {output_path}")
+    
+    return Output(
+        output_path,
+        metadata={
+            "row_count": MetadataValue.int(row_count),
+            "output_path": MetadataValue.path(str(output_path)),
+            "module": MetadataValue.text(config.module_name),
+        },
+    )
+
+
+@asset(
+    description="VO2Max weights converted to unified schema.",
+    compute_kind="conversion",
+    io_manager_key="module_io_manager",
+    metadata={"schema": "rsid, genotype, module, weight, state, priority, conclusion, curator, method", "format": "parquet"},
+    op_tags={"dagster/concurrency_key": "module_conversion"},
+)
+def vo2max_weights(
+    context: AssetExecutionContext,
+    vo2max_sqlite: Path,
+    config: VO2MaxConfig,
+) -> Output[Path]:
+    """Convert VO2Max to weights.parquet."""
+    logger = context.log
+    output_dir = get_vo2max_output_dir(config)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / "weights.parquet"
+    
+    logger.info(f"Converting weights from {vo2max_sqlite}")
+    
+    with start_action(action_type="convert_vo2max_weights"):
+        weights = convert_vo2max_weights(
+            vo2max_sqlite,
+            curator=config.curator,
+            method=config.method,
+        )
+        weights.sink_parquet(output_path, engine="streaming")
+    
+    row_count = pl.scan_parquet(output_path).select(pl.len()).collect().item()
+    logger.info(f"Wrote {row_count} weights to {output_path}")
+    
+    return Output(
+        output_path,
+        metadata={
+            "row_count": MetadataValue.int(row_count),
+            "output_path": MetadataValue.path(str(output_path)),
+            "module": MetadataValue.text(config.module_name),
+            "curator": MetadataValue.text(config.curator),
+        },
+    )
+
+
+@asset(
+    description="VO2Max weights joined with Ensembl variation data.",
+    compute_kind="join",
+    io_manager_key="module_io_manager",
+    metadata={"format": "parquet", "join_type": "inner"},
+    op_tags={"dagster/concurrency_key": "ensembl_join"},
+)
+def vo2max_with_ensembl(
+    context: AssetExecutionContext,
+    ensembl_variations_source: str,
+    vo2max_weights: Path,
+    config: VO2MaxConfig,
+) -> Output[Path]:
+    """Join VO2Max weights with Ensembl variation data for chromosomal positions and ClinVar."""
+    logger = context.log
+    output_dir = get_vo2max_output_dir(config)
+    output_path = output_dir / "vo2max_ensembl_joined.parquet"
+    
+    logger.info("Joining VO2Max weights with Ensembl variations")
+    
+    with start_action(action_type="join_vo2max_ensembl") as action:
+        ensembl_files = resolve_ensembl_parquet_files_from_source(ensembl_variations_source)
+        row_count = join_weights_with_ensembl_duckdb(
+            weights_path=Path(vo2max_weights),
+            ensembl_files=ensembl_files,
+            output_path=output_path,
+            duckdb_config=DuckDBConfig(),
+        )
+        action.log(message_type="info", step="joined_written", path=str(output_path), row_count=row_count)
+    
+    row_count = pl.scan_parquet(output_path).select(pl.len()).collect().item()
+    logger.info(f"Wrote {row_count} joined rows to {output_path}")
+    
+    return Output(output_path, metadata={"row_count": MetadataValue.int(row_count), "output_path": MetadataValue.path(str(output_path))})
+
+
+@asset(
+    description="Upload VO2Max module parquet files to HuggingFace Hub.",
+    compute_kind="upload",
+    io_manager_key="hf_upload_io_manager",
+    metadata={"destination": "HuggingFace Hub", "repo": "just-dna-seq/annotators"},
+)
+def vo2max_hf_upload(
+    context: AssetExecutionContext,
+    vo2max_annotations: Path,
+    vo2max_studies: Path,
+    vo2max_with_ensembl: Path,
+    config: AnnotatorsUploadConfig,
+) -> Output[dict]:
+    """Upload VO2Max parquet files to HuggingFace Hub."""
+    from prepare_annotations.huggingface.uploader import upload_files_batch
+    
+    logger = context.log
+    
+    parquet_files = [vo2max_annotations, vo2max_studies, vo2max_with_ensembl]
+    path_in_repos = [
+        f"{config.path_prefix}/vo2max/annotations.parquet",
+        f"{config.path_prefix}/vo2max/studies.parquet",
+        f"{config.path_prefix}/vo2max/weights.parquet",
+    ]
+    
+    logger.info(f"Uploading {len(parquet_files)} files to {config.repo_id}")
+    
+    with start_action(action_type="upload_vo2max_to_hf", repo_id=config.repo_id):
+        result = upload_files_batch(
+            parquet_files=parquet_files,
+            repo_id=config.repo_id,
+            path_in_repos=path_in_repos,
+            repo_type="dataset",
+            token=config.token,
+            commit_message="Update vo2max module",
+        )
+    
+    logger.info(f"Upload complete: {result.num_uploaded} uploaded, {result.num_skipped} skipped")
+    
+    return Output(
+        {"repo_id": config.repo_id, "num_uploaded": result.num_uploaded, "num_skipped": result.num_skipped},
+        metadata={
+            "repo_id": MetadataValue.text(config.repo_id),
+            "num_uploaded": MetadataValue.int(result.num_uploaded),
+            "num_skipped": MetadataValue.int(result.num_skipped),
+            "url": MetadataValue.url(f"https://huggingface.co/datasets/{config.repo_id}"),
+        },
+    )
+
+
+# ============================================================================
+# SUPERHUMAN ASSETS
+# ============================================================================
+
+
+@asset(
+    description="Superhuman SQLite database downloaded from GitHub.",
+    compute_kind="download",
+    io_manager_key="module_io_manager",
+    metadata={"format": "sqlite", "source": "github", "repo": "dna-seq/just_superhuman"},
+)
+def superhuman_sqlite(
+    context: AssetExecutionContext,
+    config: SuperhumanSourceConfig,
+) -> Output[Path]:
+    """Download Superhuman SQLite database from GitHub."""
+    logger = context.log
+    output_path = MODULES_DIR / "just_superhuman" / "superhuman.sqlite"
+    
+    if output_path.exists() and not config.force_download:
+        size_mb = output_path.stat().st_size / (1024 * 1024)
+        logger.info(f"Using cached SQLite: {output_path} ({size_mb:.2f} MB)")
+        return Output(
+            output_path,
+            metadata={
+                "source": MetadataValue.text("cached"),
+                "path": MetadataValue.path(str(output_path)),
+                "size_mb": MetadataValue.float(size_mb),
+            },
+        )
+    
+    url = config.download_url
+    logger.info(f"Downloading Superhuman from {url}")
+    
+    with start_action(action_type="download_superhuman_sqlite", url=url):
+        _download_file_with_progress(url, output_path, logger)
+        size_mb = output_path.stat().st_size / (1024 * 1024)
+    
+    return Output(
+        output_path,
+        metadata={
+            "source": MetadataValue.text("github"),
+            "url": MetadataValue.url(url),
+            "path": MetadataValue.path(str(output_path)),
+            "size_mb": MetadataValue.float(size_mb),
+        },
+    )
+
+
+def get_superhuman_output_dir(config: SuperhumanConfig) -> Path:
+    """Resolve the output directory for Superhuman conversion."""
+    if config.output_dir:
+        return Path(config.output_dir)
+    return MODULES_OUTPUT_DIR / config.module_name
+
+
+@asset(
+    description="Superhuman annotations converted to unified schema.",
+    compute_kind="conversion",
+    io_manager_key="module_io_manager",
+    metadata={"schema": "rsid, module, gene, phenotype, category", "format": "parquet"},
+    op_tags={"dagster/concurrency_key": "module_conversion"},
+)
+def superhuman_annotations(
+    context: AssetExecutionContext,
+    superhuman_sqlite: Path,
+    config: SuperhumanConfig,
+) -> Output[Path]:
+    """Convert Superhuman to annotations.parquet."""
+    logger = context.log
+    output_dir = get_superhuman_output_dir(config)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / "annotations.parquet"
+    
+    logger.info(f"Converting annotations from {superhuman_sqlite}")
+    
+    with start_action(action_type="convert_superhuman_annotations"):
+        annotations = convert_superhuman_annotations(superhuman_sqlite)
+        annotations.sink_parquet(output_path, engine="streaming")
+    
+    row_count = pl.scan_parquet(output_path).select(pl.len()).collect().item()
+    logger.info(f"Wrote {row_count} annotations to {output_path}")
+    
+    return Output(
+        output_path,
+        metadata={
+            "row_count": MetadataValue.int(row_count),
+            "output_path": MetadataValue.path(str(output_path)),
+            "module": MetadataValue.text(config.module_name),
+        },
+    )
+
+
+@asset(
+    description="Superhuman studies converted to unified schema.",
+    compute_kind="conversion",
+    io_manager_key="module_io_manager",
+    metadata={"schema": "rsid, module, pmid, population, p_value, conclusion, study_design", "format": "parquet"},
+    op_tags={"dagster/concurrency_key": "module_conversion"},
+)
+def superhuman_studies(
+    context: AssetExecutionContext,
+    superhuman_sqlite: Path,
+    config: SuperhumanConfig,
+) -> Output[Path]:
+    """Convert Superhuman to studies.parquet."""
+    logger = context.log
+    output_dir = get_superhuman_output_dir(config)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / "studies.parquet"
+    
+    logger.info(f"Converting studies from {superhuman_sqlite}")
+    
+    with start_action(action_type="convert_superhuman_studies"):
+        studies = convert_superhuman_studies(superhuman_sqlite)
+        studies.sink_parquet(output_path, engine="streaming")
+    
+    row_count = pl.scan_parquet(output_path).select(pl.len()).collect().item()
+    logger.info(f"Wrote {row_count} studies to {output_path}")
+    
+    return Output(
+        output_path,
+        metadata={
+            "row_count": MetadataValue.int(row_count),
+            "output_path": MetadataValue.path(str(output_path)),
+            "module": MetadataValue.text(config.module_name),
+        },
+    )
+
+
+@asset(
+    description="Superhuman weights converted to unified schema (qualitative, no numeric weights).",
+    compute_kind="conversion",
+    io_manager_key="module_io_manager",
+    metadata={"schema": "rsid, genotype, module, weight, state, priority, conclusion, curator, method", "format": "parquet"},
+    op_tags={"dagster/concurrency_key": "module_conversion"},
+)
+def superhuman_weights(
+    context: AssetExecutionContext,
+    superhuman_sqlite: Path,
+    config: SuperhumanConfig,
+) -> Output[Path]:
+    """Convert Superhuman to weights.parquet (qualitative annotations, NULL weights)."""
+    logger = context.log
+    output_dir = get_superhuman_output_dir(config)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / "weights.parquet"
+    
+    logger.info(f"Converting weights from {superhuman_sqlite}")
+    
+    with start_action(action_type="convert_superhuman_weights"):
+        weights = convert_superhuman_weights(
+            superhuman_sqlite,
+            curator=config.curator,
+            method=config.method,
+        )
+        weights.sink_parquet(output_path, engine="streaming")
+    
+    row_count = pl.scan_parquet(output_path).select(pl.len()).collect().item()
+    logger.info(f"Wrote {row_count} weights to {output_path}")
+    
+    return Output(
+        output_path,
+        metadata={
+            "row_count": MetadataValue.int(row_count),
+            "output_path": MetadataValue.path(str(output_path)),
+            "module": MetadataValue.text(config.module_name),
+            "curator": MetadataValue.text(config.curator),
+        },
+    )
+
+
+@asset(
+    description="Superhuman weights joined with Ensembl variation data.",
+    compute_kind="join",
+    io_manager_key="module_io_manager",
+    metadata={"format": "parquet", "join_type": "inner"},
+    op_tags={"dagster/concurrency_key": "ensembl_join"},
+)
+def superhuman_with_ensembl(
+    context: AssetExecutionContext,
+    ensembl_variations_source: str,
+    superhuman_weights: Path,
+    config: SuperhumanConfig,
+) -> Output[Path]:
+    """Join Superhuman weights with Ensembl variation data for chromosomal positions and ClinVar."""
+    logger = context.log
+    output_dir = get_superhuman_output_dir(config)
+    output_path = output_dir / "superhuman_ensembl_joined.parquet"
+    
+    logger.info("Joining Superhuman weights with Ensembl variations")
+    
+    with start_action(action_type="join_superhuman_ensembl") as action:
+        ensembl_files = resolve_ensembl_parquet_files_from_source(ensembl_variations_source)
+        row_count = join_weights_with_ensembl_duckdb(
+            weights_path=Path(superhuman_weights),
+            ensembl_files=ensembl_files,
+            output_path=output_path,
+            duckdb_config=DuckDBConfig(),
+        )
+        action.log(message_type="info", step="joined_written", path=str(output_path), row_count=row_count)
+    
+    row_count = pl.scan_parquet(output_path).select(pl.len()).collect().item()
+    logger.info(f"Wrote {row_count} joined rows to {output_path}")
+    
+    return Output(output_path, metadata={"row_count": MetadataValue.int(row_count), "output_path": MetadataValue.path(str(output_path))})
+
+
+@asset(
+    description="Upload Superhuman module parquet files to HuggingFace Hub.",
+    compute_kind="upload",
+    io_manager_key="hf_upload_io_manager",
+    metadata={"destination": "HuggingFace Hub", "repo": "just-dna-seq/annotators"},
+)
+def superhuman_hf_upload(
+    context: AssetExecutionContext,
+    superhuman_annotations: Path,
+    superhuman_studies: Path,
+    superhuman_with_ensembl: Path,
+    config: AnnotatorsUploadConfig,
+) -> Output[dict]:
+    """Upload Superhuman parquet files to HuggingFace Hub."""
+    from prepare_annotations.huggingface.uploader import upload_files_batch
+    
+    logger = context.log
+    
+    parquet_files = [superhuman_annotations, superhuman_studies, superhuman_with_ensembl]
+    path_in_repos = [
+        f"{config.path_prefix}/superhuman/annotations.parquet",
+        f"{config.path_prefix}/superhuman/studies.parquet",
+        f"{config.path_prefix}/superhuman/weights.parquet",
+    ]
+    
+    logger.info(f"Uploading {len(parquet_files)} files to {config.repo_id}")
+    
+    with start_action(action_type="upload_superhuman_to_hf", repo_id=config.repo_id):
+        result = upload_files_batch(
+            parquet_files=parquet_files,
+            repo_id=config.repo_id,
+            path_in_repos=path_in_repos,
+            repo_type="dataset",
+            token=config.token,
+            commit_message="Update superhuman module",
+        )
+    
+    logger.info(f"Upload complete: {result.num_uploaded} uploaded, {result.num_skipped} skipped")
+    
+    return Output(
+        {"repo_id": config.repo_id, "num_uploaded": result.num_uploaded, "num_skipped": result.num_skipped},
+        metadata={
+            "repo_id": MetadataValue.text(config.repo_id),
+            "num_uploaded": MetadataValue.int(result.num_uploaded),
+            "num_skipped": MetadataValue.int(result.num_skipped),
+            "url": MetadataValue.url(f"https://huggingface.co/datasets/{config.repo_id}"),
+        },
+    )
+
+
+# ============================================================================
+# CORONARY ASSETS
+# ============================================================================
+
+
+@asset(
+    description="Coronary SQLite database downloaded from GitHub.",
+    compute_kind="download",
+    io_manager_key="module_io_manager",
+    metadata={"format": "sqlite", "source": "github", "repo": "dna-seq/just_coronary"},
+)
+def coronary_sqlite(
+    context: AssetExecutionContext,
+    config: CoronarySourceConfig,
+) -> Output[Path]:
+    """Download Coronary SQLite database from GitHub."""
+    logger = context.log
+    output_path = MODULES_DIR / "just_coronary" / "coronary.sqlite"
+    
+    if output_path.exists() and not config.force_download:
+        size_mb = output_path.stat().st_size / (1024 * 1024)
+        logger.info(f"Using cached SQLite: {output_path} ({size_mb:.2f} MB)")
+        return Output(
+            output_path,
+            metadata={
+                "source": MetadataValue.text("cached"),
+                "path": MetadataValue.path(str(output_path)),
+                "size_mb": MetadataValue.float(size_mb),
+            },
+        )
+    
+    url = config.download_url
+    logger.info(f"Downloading Coronary from {url}")
+    
+    with start_action(action_type="download_coronary_sqlite", url=url):
+        _download_file_with_progress(url, output_path, logger)
+        size_mb = output_path.stat().st_size / (1024 * 1024)
+    
+    return Output(
+        output_path,
+        metadata={
+            "source": MetadataValue.text("github"),
+            "url": MetadataValue.url(url),
+            "path": MetadataValue.path(str(output_path)),
+            "size_mb": MetadataValue.float(size_mb),
+        },
+    )
+
+
+def get_coronary_output_dir(config: CoronaryConfig) -> Path:
+    """Resolve the output directory for Coronary conversion."""
+    if config.output_dir:
+        return Path(config.output_dir)
+    return MODULES_OUTPUT_DIR / config.module_name
+
+
+@asset(
+    description="Coronary annotations converted to unified schema.",
+    compute_kind="conversion",
+    io_manager_key="module_io_manager",
+    metadata={"schema": "rsid, module, gene, phenotype, category", "format": "parquet"},
+    op_tags={"dagster/concurrency_key": "module_conversion"},
+)
+def coronary_annotations(
+    context: AssetExecutionContext,
+    coronary_sqlite: Path,
+    config: CoronaryConfig,
+) -> Output[Path]:
+    """Convert Coronary to annotations.parquet."""
+    logger = context.log
+    output_dir = get_coronary_output_dir(config)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / "annotations.parquet"
+    
+    logger.info(f"Converting annotations from {coronary_sqlite}")
+    
+    with start_action(action_type="convert_coronary_annotations"):
+        annotations = convert_coronary_annotations(coronary_sqlite)
+        annotations.sink_parquet(output_path, engine="streaming")
+    
+    row_count = pl.scan_parquet(output_path).select(pl.len()).collect().item()
+    logger.info(f"Wrote {row_count} annotations to {output_path}")
+    
+    return Output(
+        output_path,
+        metadata={
+            "row_count": MetadataValue.int(row_count),
+            "output_path": MetadataValue.path(str(output_path)),
+            "module": MetadataValue.text(config.module_name),
+        },
+    )
+
+
+@asset(
+    description="Coronary studies converted to unified schema.",
+    compute_kind="conversion",
+    io_manager_key="module_io_manager",
+    metadata={"schema": "rsid, module, pmid, population, p_value, conclusion, study_design", "format": "parquet"},
+    op_tags={"dagster/concurrency_key": "module_conversion"},
+)
+def coronary_studies(
+    context: AssetExecutionContext,
+    coronary_sqlite: Path,
+    config: CoronaryConfig,
+) -> Output[Path]:
+    """Convert Coronary to studies.parquet."""
+    logger = context.log
+    output_dir = get_coronary_output_dir(config)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / "studies.parquet"
+    
+    logger.info(f"Converting studies from {coronary_sqlite}")
+    
+    with start_action(action_type="convert_coronary_studies"):
+        studies = convert_coronary_studies(coronary_sqlite)
+        studies.sink_parquet(output_path, engine="streaming")
+    
+    row_count = pl.scan_parquet(output_path).select(pl.len()).collect().item()
+    logger.info(f"Wrote {row_count} studies to {output_path}")
+    
+    return Output(
+        output_path,
+        metadata={
+            "row_count": MetadataValue.int(row_count),
+            "output_path": MetadataValue.path(str(output_path)),
+            "module": MetadataValue.text(config.module_name),
+        },
+    )
+
+
+@asset(
+    description="Coronary weights converted to unified schema.",
+    compute_kind="conversion",
+    io_manager_key="module_io_manager",
+    metadata={"schema": "rsid, genotype, module, weight, state, priority, conclusion, curator, method", "format": "parquet"},
+    op_tags={"dagster/concurrency_key": "module_conversion"},
+)
+def coronary_weights(
+    context: AssetExecutionContext,
+    coronary_sqlite: Path,
+    config: CoronaryConfig,
+) -> Output[Path]:
+    """Convert Coronary to weights.parquet."""
+    logger = context.log
+    output_dir = get_coronary_output_dir(config)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / "weights.parquet"
+    
+    logger.info(f"Converting weights from {coronary_sqlite}")
+    
+    with start_action(action_type="convert_coronary_weights"):
+        weights = convert_coronary_weights(
+            coronary_sqlite,
+            curator=config.curator,
+            method=config.method,
+        )
+        weights.sink_parquet(output_path, engine="streaming")
+    
+    row_count = pl.scan_parquet(output_path).select(pl.len()).collect().item()
+    logger.info(f"Wrote {row_count} weights to {output_path}")
+    
+    return Output(
+        output_path,
+        metadata={
+            "row_count": MetadataValue.int(row_count),
+            "output_path": MetadataValue.path(str(output_path)),
+            "module": MetadataValue.text(config.module_name),
+            "curator": MetadataValue.text(config.curator),
+        },
+    )
+
+
+@asset(
+    description="Coronary weights joined with Ensembl variation data.",
+    compute_kind="join",
+    io_manager_key="module_io_manager",
+    metadata={"format": "parquet", "join_type": "inner"},
+    op_tags={"dagster/concurrency_key": "ensembl_join"},
+)
+def coronary_with_ensembl(
+    context: AssetExecutionContext,
+    ensembl_variations_source: str,
+    coronary_weights: Path,
+    config: CoronaryConfig,
+) -> Output[Path]:
+    """Join Coronary weights with Ensembl variation data for chromosomal positions and ClinVar."""
+    logger = context.log
+    output_dir = get_coronary_output_dir(config)
+    output_path = output_dir / "coronary_ensembl_joined.parquet"
+    
+    logger.info("Joining Coronary weights with Ensembl variations")
+    
+    with start_action(action_type="join_coronary_ensembl") as action:
+        ensembl_files = resolve_ensembl_parquet_files_from_source(ensembl_variations_source)
+        row_count = join_weights_with_ensembl_duckdb(
+            weights_path=Path(coronary_weights),
+            ensembl_files=ensembl_files,
+            output_path=output_path,
+            duckdb_config=DuckDBConfig(),
+        )
+        action.log(message_type="info", step="joined_written", path=str(output_path), row_count=row_count)
+    
+    row_count = pl.scan_parquet(output_path).select(pl.len()).collect().item()
+    logger.info(f"Wrote {row_count} joined rows to {output_path}")
+    
+    return Output(output_path, metadata={"row_count": MetadataValue.int(row_count), "output_path": MetadataValue.path(str(output_path))})
+
+
+@asset(
+    description="Upload Coronary module parquet files to HuggingFace Hub.",
+    compute_kind="upload",
+    io_manager_key="hf_upload_io_manager",
+    metadata={"destination": "HuggingFace Hub", "repo": "just-dna-seq/annotators"},
+)
+def coronary_hf_upload(
+    context: AssetExecutionContext,
+    coronary_annotations: Path,
+    coronary_studies: Path,
+    coronary_with_ensembl: Path,
+    config: AnnotatorsUploadConfig,
+) -> Output[dict]:
+    """Upload Coronary parquet files to HuggingFace Hub."""
+    from prepare_annotations.huggingface.uploader import upload_files_batch
+    
+    logger = context.log
+    
+    parquet_files = [coronary_annotations, coronary_studies, coronary_with_ensembl]
+    path_in_repos = [
+        f"{config.path_prefix}/coronary/annotations.parquet",
+        f"{config.path_prefix}/coronary/studies.parquet",
+        f"{config.path_prefix}/coronary/weights.parquet",
+    ]
+    
+    logger.info(f"Uploading {len(parquet_files)} files to {config.repo_id}")
+    
+    with start_action(action_type="upload_coronary_to_hf", repo_id=config.repo_id):
+        result = upload_files_batch(
+            parquet_files=parquet_files,
+            repo_id=config.repo_id,
+            path_in_repos=path_in_repos,
+            repo_type="dataset",
+            token=config.token,
+            commit_message="Update coronary module",
+        )
+    
+    logger.info(f"Upload complete: {result.num_uploaded} uploaded, {result.num_skipped} skipped")
+    
+    return Output(
+        {"repo_id": config.repo_id, "num_uploaded": result.num_uploaded, "num_skipped": result.num_skipped},
+        metadata={
+            "repo_id": MetadataValue.text(config.repo_id),
+            "num_uploaded": MetadataValue.int(result.num_uploaded),
+            "num_skipped": MetadataValue.int(result.num_skipped),
+            "url": MetadataValue.url(f"https://huggingface.co/datasets/{config.repo_id}"),
+        },
+    )
+
+
+# ============================================================================
 # EXPORT ALL ASSETS
 # ============================================================================
 
 module_assets = [
     ensembl_variations_source,
+    # LongevityMap
     longevitymap_sqlite,
     longevitymap_annotations,
     longevitymap_studies,
     longevitymap_weights,
     longevitymap_with_ensembl,
     longevitymap_hf_upload,
+    # LipidMetabolism
+    lipidmetabolism_sqlite,
+    lipidmetabolism_annotations,
+    lipidmetabolism_studies,
+    lipidmetabolism_weights,
+    lipidmetabolism_with_ensembl,
+    lipidmetabolism_hf_upload,
+    # VO2Max
+    vo2max_sqlite,
+    vo2max_annotations,
+    vo2max_studies,
+    vo2max_weights,
+    vo2max_with_ensembl,
+    vo2max_hf_upload,
+    # Superhuman
+    superhuman_sqlite,
+    superhuman_annotations,
+    superhuman_studies,
+    superhuman_weights,
+    superhuman_with_ensembl,
+    superhuman_hf_upload,
+    # Coronary
+    coronary_sqlite,
+    coronary_annotations,
+    coronary_studies,
+    coronary_weights,
+    coronary_with_ensembl,
+    coronary_hf_upload,
 ]

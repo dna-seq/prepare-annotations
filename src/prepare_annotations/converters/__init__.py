@@ -34,8 +34,33 @@ from prepare_annotations.converters.longevitymap import (
     convert_longevitymap_studies,
     convert_longevitymap_weights,
 )
-from prepare_annotations.converters.lipidmetabolism import convert_lipidmetabolism
-from prepare_annotations.converters.vo2max import convert_vo2max
-from prepare_annotations.converters.superhuman import convert_superhuman
-from prepare_annotations.converters.coronary import convert_coronary
-from prepare_annotations.converters.drugs import convert_drugs
+from prepare_annotations.converters.lipidmetabolism import (
+    convert_lipidmetabolism,
+    convert_lipidmetabolism_annotations,
+    convert_lipidmetabolism_studies,
+    convert_lipidmetabolism_weights,
+)
+from prepare_annotations.converters.vo2max import (
+    convert_vo2max,
+    convert_vo2max_annotations,
+    convert_vo2max_studies,
+    convert_vo2max_weights,
+)
+from prepare_annotations.converters.superhuman import (
+    convert_superhuman,
+    convert_superhuman_annotations,
+    convert_superhuman_studies,
+    convert_superhuman_weights,
+)
+from prepare_annotations.converters.coronary import (
+    convert_coronary,
+    convert_coronary_annotations,
+    convert_coronary_studies,
+    convert_coronary_weights,
+)
+from prepare_annotations.converters.drugs import (
+    convert_drugs,
+    convert_drugs_annotations,
+    convert_drugs_studies,
+    convert_drugs_weights,
+)

@@ -5,7 +5,7 @@ This repo includes a **Dagster** implementation of the Ensembl preparation pipel
 The Dagster implementation lives under:
 - `src/prepare_annotations/definitions.py` (main Dagster definitions)
 - `src/prepare_annotations/assets/` (asset definitions)
-- `src/prepare_annotations/pipelines/` (legacy location, backward compatible)
+- `src/prepare_annotations/core/` (shared utilities)
 
 It is intentionally **file/directory based**: each asset materializes a concrete on-disk artifact (a JSON manifest, a directory of VCFs, a directory of Parquet files, etc.). This makes lineage inspectable and keeps memory usage predictable.
 
@@ -86,7 +86,7 @@ ensembl_hf_upload   (optional)
 
 ### On-disk layout (default)
 
-Paths are resolved via `src/prepare_annotations/pipelines/resources.py`.
+Paths are resolved via `src/prepare_annotations/core/paths.py`.
 
 By default the pipeline writes to your user cache (same convention as other Just DNA tooling):
 - Base cache dir: `~/.cache/just-dna-pipelines/` (or `JUST_DNA_PIPELINES_CACHE_DIR`)
@@ -162,7 +162,7 @@ uv run dagster-ensembl longevitymap --upload
 Start the web interface for interactive execution:
 
 ```bash
-uv run dagster-ensembl ui
+uv run dagster-ui
 ```
 
 Then materialize assets / jobs from the UI.

@@ -486,14 +486,22 @@ def convert_module_weights_with_ensembl(
         con.execute("LOAD httpfs")
     
     # Single SQL query handles everything:
-    # 1. Reads weights from SQLite
+    # 1. Reads weights from SQLite with variant conclusions
     # 2. Joins with Ensembl (DuckDB optimizes this automatically)
     # 3. Expands genotypes based on zygosity
     # 4. Derives state from weight sign
     query = f"""
     WITH weights_raw AS (
-        SELECT rsid, allele, state AS allele_state, zygosity, weight, priority
-        FROM sqlite_scan('{db_sql}', 'allele_weights')
+        SELECT 
+            aw.rsid, 
+            aw.allele, 
+            aw.state AS allele_state, 
+            aw.zygosity, 
+            aw.weight, 
+            aw.priority,
+            -- Get one conclusion per rsid to avoid row multiplication
+            (SELECT conclusions FROM sqlite_scan('{db_sql}', 'variant') WHERE identifier = aw.rsid LIMIT 1) AS conclusion
+        FROM sqlite_scan('{db_sql}', 'allele_weights') aw
     ),
     ensembl AS (
         SELECT id, ref, alts
@@ -505,7 +513,8 @@ def convert_module_weights_with_ensembl(
             rsid,
             list_sort([allele, allele]) AS genotype,
             weight,
-            priority
+            priority,
+            conclusion
         FROM weights_raw
         WHERE zygosity = 'hom'
     ),
@@ -515,40 +524,68 @@ def convert_module_weights_with_ensembl(
             rsid,
             list_sort([substr(allele, 1, 1), substr(allele, 2, 1)]) AS genotype,
             weight,
-            priority
+            priority,
+            conclusion
         FROM weights_raw
         WHERE zygosity = 'het' AND allele_state = 'spec' AND length(allele) = 2
     ),
     -- Heterozygous + alt: join with Ensembl to get all possible other alleles
+    -- Includes strand normalization: try both original allele and its complement
     het_alt_with_ensembl AS (
         SELECT 
             w.rsid,
             w.allele AS curated_allele,
+            -- Compute complement for strand normalization (A<->T, C<->G)
+            CASE w.allele 
+                WHEN 'A' THEN 'T' 
+                WHEN 'T' THEN 'A' 
+                WHEN 'C' THEN 'G' 
+                WHEN 'G' THEN 'C' 
+                ELSE w.allele 
+            END AS curated_allele_complement,
             w.weight,
             w.priority,
+            w.conclusion,
             e.ref,
-            e.alts
+            e.alts,
+            -- Determine if we matched via complement (for correct genotype construction)
+            CASE 
+                WHEN w.allele = e.ref OR list_contains(COALESCE(e.alts, []), w.allele) THEN FALSE
+                ELSE TRUE
+            END AS used_complement
         FROM weights_raw w
         JOIN ensembl e ON e.id = w.rsid
         WHERE w.zygosity = 'het' AND w.allele_state = 'alt'
+          -- Match either original allele or its complement
+          AND (
+              w.allele = e.ref 
+              OR list_contains(COALESCE(e.alts, []), w.allele)
+              OR CASE w.allele WHEN 'A' THEN 'T' WHEN 'T' THEN 'A' WHEN 'C' THEN 'G' WHEN 'G' THEN 'C' ELSE w.allele END = e.ref
+              OR list_contains(COALESCE(e.alts, []), CASE w.allele WHEN 'A' THEN 'T' WHEN 'T' THEN 'A' WHEN 'C' THEN 'G' WHEN 'G' THEN 'C' ELSE w.allele END)
+          )
     ),
     -- Expand het+alt: curated allele pairs with each valid other allele
+    -- When complement was used, use complemented allele in genotype
     het_alt_expanded AS (
         SELECT
             rsid,
-            list_sort([curated_allele, other_allele]) AS genotype,
+            list_sort([
+                CASE WHEN used_complement THEN curated_allele_complement ELSE curated_allele END, 
+                other_allele
+            ]) AS genotype,
             weight,
-            priority
+            priority,
+            conclusion
         FROM (
-            -- Pair with ref if ref != curated_allele
-            SELECT rsid, curated_allele, ref AS other_allele, weight, priority
+            -- Pair with ref if ref != effective curated allele
+            SELECT rsid, curated_allele, curated_allele_complement, used_complement, ref AS other_allele, weight, priority, conclusion
             FROM het_alt_with_ensembl
-            WHERE ref != curated_allele
+            WHERE ref != CASE WHEN used_complement THEN curated_allele_complement ELSE curated_allele END
             UNION ALL
-            -- Pair with each alt that != curated_allele
-            SELECT h.rsid, h.curated_allele, alt.alt AS other_allele, h.weight, h.priority
+            -- Pair with each alt that != effective curated allele
+            SELECT h.rsid, h.curated_allele, h.curated_allele_complement, h.used_complement, alt.alt AS other_allele, h.weight, h.priority, h.conclusion
             FROM het_alt_with_ensembl h, UNNEST(COALESCE(h.alts, [])) AS alt(alt)
-            WHERE alt.alt != h.curated_allele
+            WHERE alt.alt != CASE WHEN h.used_complement THEN h.curated_allele_complement ELSE h.curated_allele END
         )
     ),
     -- Combine all genotype sources
@@ -559,13 +596,14 @@ def convert_module_weights_with_ensembl(
         UNION ALL
         SELECT * FROM het_alt_expanded
     ),
-    -- Deduplicate and add metadata
+    -- Deduplicate and add metadata (use FIRST_VALUE for conclusion)
     deduplicated AS (
         SELECT DISTINCT
             rsid,
             genotype,
             weight,
-            priority
+            priority,
+            conclusion
         FROM all_genotypes
     )
     SELECT
@@ -579,7 +617,7 @@ def convert_module_weights_with_ensembl(
             ELSE 'neutral'
         END AS state,
         priority,
-        NULL::VARCHAR AS conclusion,
+        conclusion,
         '{curator_sql}' AS curator,
         '{method_sql}' AS method
     FROM deduplicated

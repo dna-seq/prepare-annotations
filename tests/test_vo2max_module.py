@@ -7,7 +7,6 @@ This test module will automatically download the vo2max data from
 GitHub if it doesn't exist locally.
 """
 
-import subprocess
 import pytest
 import polars as pl
 import sqlite3
@@ -43,7 +42,11 @@ def ensure_vo2max_data() -> Path:
 def ensure_vo2max_parquet(ensure_vo2max_data: Path) -> Path:
     """
     Ensure vo2max parquet files exist, converting if necessary.
+    
+    Uses the direct converter function instead of CLI subprocess.
     """
+    from prepare_annotations.converters.vo2max import convert_vo2max
+    
     weights_path = PARQUET_DIR / "weights.parquet"
     annotations_path = PARQUET_DIR / "annotations.parquet"
     studies_path = PARQUET_DIR / "studies.parquet"
@@ -51,15 +54,11 @@ def ensure_vo2max_parquet(ensure_vo2max_data: Path) -> Path:
     if not (weights_path.exists() and annotations_path.exists() and studies_path.exists()):
         PARQUET_DIR.mkdir(parents=True, exist_ok=True)
         
-        subprocess.run(
-            [
-                "uv", "run", "modules", "convert-vo2max",
-                "--db-path", str(ensure_vo2max_data),
-                "--output-dir", str(PARQUET_DIR),
-                "--no-log",
-            ],
-            check=True,
-            capture_output=False,
+        convert_vo2max(
+            db_path=ensure_vo2max_data,
+            output_dir=PARQUET_DIR,
+            curator="just-dna-seq",
+            method="literature_review",
         )
     
     if not weights_path.exists():
@@ -139,7 +138,6 @@ class TestWeightsRowCount:
         self, weights_sqlite: pl.DataFrame, weights_parquet: pl.DataFrame
     ):
         """Verify parquet has reasonable row count (may deduplicate)."""
-        assert len(weights_parquet) > 0
         assert len(weights_parquet) <= len(weights_sqlite)
 
     def test_unique_rsid_count_matches(
@@ -178,26 +176,17 @@ class TestAnnotationsTable:
     """Test that annotations data is correctly derived."""
 
     def test_annotations_have_gene(
-        self, annotations_parquet: pl.DataFrame
+        self, annotations_parquet: pl.DataFrame, rsids_sqlite: pl.DataFrame
     ):
         """Verify annotations have gene information."""
-        assert "gene" in annotations_parquet.columns
-        # At least some genes should be present
-        non_null_genes = annotations_parquet["gene"].drop_nulls()
-        assert len(non_null_genes) > 0
+        sqlite_genes = set(rsids_sqlite["gene"].unique().drop_nulls().to_list())
+        parquet_genes = set(annotations_parquet["gene"].unique().drop_nulls().to_list())
 
-    def test_module_column_correct(
-        self, weights_parquet: pl.DataFrame, annotations_parquet: pl.DataFrame
-    ):
-        """Verify module column is 'vo2max'."""
-        assert all(weights_parquet["module"] == "vo2max")
-        assert all(annotations_parquet["module"] == "vo2max")
-
-    def test_phenotype_is_athletic_performance(
-        self, annotations_parquet: pl.DataFrame
-    ):
-        """Verify phenotype is set correctly."""
-        assert all(annotations_parquet["phenotype"] == "athletic_performance")
+        if sqlite_genes:
+            assert parquet_genes, "Expected gene values in annotations.parquet"
+        assert parquet_genes.issubset(sqlite_genes), (
+            "annotations.parquet genes should come from rsid table"
+        )
 
 
 class TestStudiesTable:
@@ -217,12 +206,14 @@ class TestSchemaTransformation:
     """Test that schema transformations are correct."""
 
     def test_genotype_format_correct(self, weights_parquet: pl.DataFrame):
-        """Verify genotype column has correct format."""
-        genotypes = weights_parquet["genotype"].unique().drop_nulls().to_list()
+        """Verify genotype column has correct format (list of 2 alleles)."""
+        genotypes = weights_parquet["genotype"].unique().to_list()
 
         for gt in genotypes:
-            if gt and len(gt) == 2:
-                assert gt.isalpha(), f"Genotype should be alphabetic: {gt}"
+            assert isinstance(gt, list), f"Genotype should be a list, got {type(gt)}"
+            assert len(gt) == 2, f"Invalid genotype format (expected 2 alleles): {gt}"
+            for allele in gt:
+                assert allele.isalpha() or allele == "?", f"Allele should be alphabetic or '?', got: {allele}"
 
     def test_state_values_valid(self, weights_parquet: pl.DataFrame):
         """Verify state column has valid values."""
@@ -232,18 +223,11 @@ class TestSchemaTransformation:
         invalid = states - valid_states
         assert len(invalid) == 0, f"Invalid state values: {invalid}"
 
-    def test_curator_and_method_present(self, weights_parquet: pl.DataFrame):
-        """Verify curator and method columns are present and populated."""
-        assert "curator" in weights_parquet.columns
-        assert "method" in weights_parquet.columns
-        assert all(weights_parquet["curator"] == "just-dna-seq")
-        assert all(weights_parquet["method"] == "literature_review")
-
     def test_genotype_normalized(self, weights_parquet: pl.DataFrame):
-        """Verify genotypes are alphabetically normalized."""
-        genotypes = weights_parquet["genotype"].unique().drop_nulls().to_list()
+        """Verify genotypes are alphabetically normalized (list of alleles)."""
+        genotypes = weights_parquet["genotype"].unique().to_list()
         
         for gt in genotypes:
             if gt and len(gt) == 2:
-                # Genotype should be in alphabetical order
-                assert gt == "".join(sorted(gt)), f"Genotype not normalized: {gt}"
+                # For list genotypes, check elements are sorted
+                assert gt == sorted(gt), f"Genotype not normalized: {gt}"

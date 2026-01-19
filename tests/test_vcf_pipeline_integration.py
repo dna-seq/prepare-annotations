@@ -5,7 +5,7 @@ from typing import List
 import pytest
 from eliot import start_action
 
-from prepare_annotations.pipelines.logic import prepare_vcf_source
+from prepare_annotations.pipelines import prepare_vcf_source
 from prepare_annotations.downloaders.vcf import list_paths
 
 
@@ -25,6 +25,7 @@ def test_vcf_pipeline_downloads_to_temp(tmp_path: Path) -> None:
         # Probe remote listing to decide which pattern to use (no mocking)
         preferred_urls = list_paths(url=base_url, pattern=preferred_pattern, file_only=True)
         pattern = preferred_pattern if preferred_urls else fallback_pattern
+        expected_urls = list_paths(url=base_url, pattern=pattern, file_only=True)
 
         # Run logic directly
         results = prepare_vcf_source(
@@ -38,8 +39,12 @@ def test_vcf_pipeline_downloads_to_temp(tmp_path: Path) -> None:
         parquet_paths = results.vcf_parquet_path
 
         # Assertions with clear messages
-        assert len(local_paths) >= 1, "Expected at least one downloaded file"
-        assert len(parquet_paths) == len(local_paths), "Should have same number of parquet and local paths"
+        assert len(local_paths) == len(expected_urls), (
+            f"Expected {len(expected_urls)} downloaded files, got {len(local_paths)}"
+        )
+        assert len(parquet_paths) == len(local_paths), (
+            "Should have same number of parquet and local paths"
+        )
         
         for i, (local_p, parquet_p) in enumerate(zip(local_paths, parquet_paths)):
             assert local_p.exists(), f"Downloaded file does not exist: {local_p}"

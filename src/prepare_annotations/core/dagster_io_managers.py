@@ -129,11 +129,21 @@ class ModuleIOManager(IOManager):
     - Converted parquet files in data/output/modules/{module}/
     """
     
+    # Mapping of asset keys to actual SQLite filenames (as they exist in GitHub repos)
+    SQLITE_FILENAMES: dict[str, str] = {
+        "longevitymap": "longevitymap.sqlite",
+        "lipidmetabolism": "lipid_metabolism.sqlite",
+        "vo2max": "vo2max.sqlite",
+        "superhuman": "superhuman.sqlite",
+        "coronary": "coronary.sqlite",
+    }
+    
     def _get_asset_path(self, asset_key: str) -> Path:
         """Resolve the path for a module asset based on its key."""
         if asset_key.endswith("_sqlite"):
             module = asset_key.replace("_sqlite", "")
-            return MODULES_DIR / f"just_{module}" / f"{module}.sqlite"
+            sqlite_filename = self.SQLITE_FILENAMES.get(module, f"{module}.sqlite")
+            return MODULES_DIR / f"just_{module}" / sqlite_filename
         
         # Handle longevitymap_with_ensembl specifically
         if asset_key == "longevitymap_with_ensembl":

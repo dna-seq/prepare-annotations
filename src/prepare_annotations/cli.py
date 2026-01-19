@@ -1416,7 +1416,7 @@ def _start_dagster_ui_background(port: int = 3000, host: str = "127.0.0.1"):
     
     cmd = [
         sys.executable, "-m", "dagster", "dev",
-        "-m", "prepare_annotations.pipelines",
+        "-m", "prepare_annotations.definitions",
         "-p", str(port),
         "-h", host,
     ]
@@ -1492,7 +1492,7 @@ def dagster_ui(
     
     cmd = [
         sys.executable, "-m", "dagster", "dev",
-        "-m", "prepare_annotations.pipelines",
+        "-m", "prepare_annotations.definitions",
         "-p", str(port),
         "-h", host,
     ]
@@ -1617,7 +1617,7 @@ def dagster_job(
     Execute a Dagster job by name using Python API.
     
     Ensembl jobs: full, prepare, download, convert, upload
-    Module jobs: longevitymap, longevitymap_full, longevitymap_upload
+    Module jobs: longevitymap, longevitymap_full, longevitymap_convert
     """
     ensembl_jobs = {"full", "prepare", "download", "convert", "upload"}
     
@@ -1655,43 +1655,42 @@ def dagster_job(
 
 @app.command(name="assets")
 def dagster_list_assets():
-    """List all available Dagster assets."""
+    """List all available Dagster assets (dynamically from definitions)."""
+    from prepare_annotations.definitions import defs
+    
     console.print("\n[bold cyan]🔷 Available Dagster Assets[/bold cyan]\n")
     
-    assets = [
-        ("ensembl_ftp_source", "External", "Ensembl FTP server (source of truth)"),
-        ("ensembl_vcf_urls", "Discovery", "Discovered VCF file URLs from Ensembl FTP"),
-        ("ensembl_vcf_file", "Download", "Per-file VCF download (dynamically partitioned)"),
-        ("ensembl_parquet_file", "Conversion", "Per-file VCF to Parquet conversion (dynamically partitioned)"),
-        ("ensembl_all_parquet_files", "Collector", "Collect all parquet files for upload"),
-        ("ensembl_hf_upload", "Upload", "Upload to HuggingFace Hub"),
-    ]
+    # Get assets from definitions
+    assets_defs = defs.get_all_asset_specs()
     
-    for name, kind, description in assets:
-        console.print(f"  [bold green]{name}[/bold green] [{kind}]")
-        console.print(f"      {description}")
+    # Group by prefix
+    groups: dict[str, list[str]] = {}
+    for asset_spec in assets_defs:
+        name = asset_spec.key.to_user_string()
+        prefix = name.split("_")[0] if "_" in name else "other"
+        groups.setdefault(prefix, []).append(name)
+    
+    for group in sorted(groups.keys()):
+        asset_names = sorted(groups[group])
+        console.print(f"[bold]{group.title()} Assets:[/bold]")
+        for name in asset_names:
+            console.print(f"  [bold green]{name}[/bold green]")
         console.print()
 
 
 @app.command(name="jobs")
 def dagster_list_jobs():
-    """List all available Dagster jobs."""
+    """List all available Dagster jobs (dynamically from definitions)."""
+    from prepare_annotations.definitions import defs
+    
     console.print("\n[bold cyan]🔷 Available Dagster Jobs[/bold cyan]\n")
     
-    jobs = [
-        ("full", "Complete Ensembl pipeline: download → convert → upload"),
-        ("prepare", "Ensembl: download and convert to Parquet (no splitting)"),
-        ("download", "Ensembl: download VCF files from FTP"),
-        ("convert", "Ensembl: convert VCF to Parquet"),
-        ("upload", "Ensembl: upload to HuggingFace Hub"),
-        ("longevitymap", "LongevityMap: convert to unified schema with Ensembl genotype resolution"),
-        ("longevitymap_full", "LongevityMap: convert + join with full Ensembl data"),
-        ("longevitymap_upload", "LongevityMap: convert + upload to just-dna-seq/annotators"),
-    ]
-    
-    for name, description in jobs:
-        console.print(f"  [bold green]{name}[/bold green]")
-        console.print(f"      {description}")
+    # Jobs are accessible via .jobs attribute
+    jobs = defs.jobs or []
+    for job in sorted(jobs, key=lambda j: j.name):
+        console.print(f"  [bold green]{job.name}[/bold green]")
+        if job.description:
+            console.print(f"      {job.description}")
         console.print()
 
 
@@ -1712,19 +1711,21 @@ def dagster_run_longevitymap(
         "--ensembl-cache",
         help="Path to local Ensembl cache. If not found, downloads from HuggingFace."
     ),
-    full: bool = typer.Option(
+    no_upload: bool = typer.Option(
         False,
-        "--full",
-        help="Run longevitymap_full job (includes Ensembl join)"
+        "--no-upload",
+        help="Skip HuggingFace upload (run longevitymap_full job)"
     ),
-    upload: bool = typer.Option(
+    convert_only: bool = typer.Option(
         False,
-        "--upload",
-        help="Upload to HuggingFace Hub (just-dna-seq/annotators)"
+        "--convert-only",
+        help="Convert only, no Ensembl join or upload (run longevitymap_convert job)"
     ),
 ):
     """
     Convert LongevityMap to unified annotation schema with proper genotype expansion.
+    
+    By default runs the full pipeline: convert, join with Ensembl, upload to HuggingFace.
     
     This uses the new Dagster-based conversion which:
     - Expands homozygous variants: "C" -> ["C", "C"]
@@ -1735,7 +1736,8 @@ def dagster_run_longevitymap(
     1. Local cache (if available from prior Ensembl pipeline run)
     2. HuggingFace Hub (just-dna-seq/ensembl_variations)
     
-    Use --upload to upload results to just-dna-seq/annotators on HuggingFace.
+    Use --no-upload to skip HuggingFace upload.
+    Use --convert-only to skip both Ensembl join and upload.
     """
     from dagster import DagsterInstance
     
@@ -1743,9 +1745,9 @@ def dagster_run_longevitymap(
     _ensure_dagster_config(dagster_home)
     
     # Determine which job to run based on options
-    if upload:
-        job_name = "longevitymap_upload"
-    elif full:
+    if convert_only:
+        job_name = "longevitymap_convert"
+    elif no_upload:
         job_name = "longevitymap_full"
     else:
         job_name = "longevitymap"
@@ -1783,7 +1785,7 @@ def dagster_run_longevitymap(
         run_config["ops"]["longevitymap_annotations"] = {"config": lm_config}
         run_config["ops"]["longevitymap_studies"] = {"config": lm_config}
         run_config["ops"]["longevitymap_weights"] = {"config": lm_config}
-        if full:
+        if not convert_only:
             run_config["ops"]["longevitymap_with_ensembl"] = {"config": lm_config}
     
     # Add ensembl source config
@@ -1805,11 +1807,373 @@ def dagster_run_longevitymap(
         console.print("  - annotations.parquet: Variant-level facts")
         console.print("  - studies.parquet: Per-study evidence")
         console.print("  - weights.parquet: Genotype weights with Ensembl resolution")
-        if full:
+        if not convert_only:
             console.print("  - longevitymap_ensembl_joined.parquet: Enriched with Ensembl data")
+        if not no_upload and not convert_only:
+            console.print("\n  Uploaded to: just-dna-seq/annotators on HuggingFace Hub")
     else:
         console.print(f"\n[bold red]❌ Job '{job_name}' failed![/bold red]")
         raise typer.Exit(1)
+
+
+@app.command(name="lipidmetabolism")
+def dagster_run_lipidmetabolism(
+    no_upload: bool = typer.Option(
+        False,
+        "--no-upload",
+        help="Skip HuggingFace upload (still joins with Ensembl)"
+    ),
+    convert_only: bool = typer.Option(
+        False,
+        "--convert-only",
+        help="Convert only (no Ensembl join, no upload)"
+    ),
+):
+    """
+    Convert LipidMetabolism to unified annotation schema.
+    
+    Pipeline modes:
+    - Default: Full pipeline with Ensembl join + HuggingFace upload
+    - --no-upload: Convert + Ensembl join (no upload)
+    - --convert-only: Convert only (no Ensembl join, no upload)
+    """
+    from dagster import DagsterInstance
+    
+    dagster_home = _get_dagster_home()
+    _ensure_dagster_config(dagster_home)
+    
+    if convert_only:
+        job_name = "lipidmetabolism_convert"
+    elif no_upload:
+        job_name = "lipidmetabolism_full"
+    else:
+        job_name = "lipidmetabolism"
+    
+    console.print(f"\n[bold cyan]🔷 Running Dagster Job: {job_name}[/bold cyan]")
+    console.print(f"   Dagster home: {dagster_home}")
+    
+    _ensure_dagster_ui_running(force_restart=False)
+    
+    console.print("\n🚀 Executing pipeline...\n")
+    console.print("   Monitor progress at: http://127.0.0.1:3000\n")
+    
+    from prepare_annotations.definitions import defs
+    
+    job = defs.resolve_job_def(job_name)
+    
+    with DagsterInstance.get() as instance:
+        result = job.execute_in_process(instance=instance)
+    
+    if result.success:
+        console.print(f"\n[bold green]✅ Job '{job_name}' completed successfully![/bold green]")
+        if not no_upload:
+            console.print("\n  Uploaded to: just-dna-seq/annotators on HuggingFace Hub")
+    else:
+        console.print(f"\n[bold red]❌ Job '{job_name}' failed![/bold red]")
+        raise typer.Exit(1)
+
+
+@app.command(name="vo2max")
+def dagster_run_vo2max(
+    no_upload: bool = typer.Option(
+        False,
+        "--no-upload",
+        help="Skip HuggingFace upload (still joins with Ensembl)"
+    ),
+    convert_only: bool = typer.Option(
+        False,
+        "--convert-only",
+        help="Convert only (no Ensembl join, no upload)"
+    ),
+):
+    """
+    Convert VO2Max to unified annotation schema.
+    
+    Pipeline modes:
+    - Default: Full pipeline with Ensembl join + HuggingFace upload
+    - --no-upload: Convert + Ensembl join (no upload)
+    - --convert-only: Convert only (no Ensembl join, no upload)
+    """
+    from dagster import DagsterInstance
+    
+    dagster_home = _get_dagster_home()
+    _ensure_dagster_config(dagster_home)
+    
+    if convert_only:
+        job_name = "vo2max_convert"
+    elif no_upload:
+        job_name = "vo2max_full"
+    else:
+        job_name = "vo2max"
+    
+    console.print(f"\n[bold cyan]🔷 Running Dagster Job: {job_name}[/bold cyan]")
+    console.print(f"   Dagster home: {dagster_home}")
+    
+    _ensure_dagster_ui_running(force_restart=False)
+    
+    console.print("\n🚀 Executing pipeline...\n")
+    console.print("   Monitor progress at: http://127.0.0.1:3000\n")
+    
+    from prepare_annotations.definitions import defs
+    
+    job = defs.resolve_job_def(job_name)
+    
+    with DagsterInstance.get() as instance:
+        result = job.execute_in_process(instance=instance)
+    
+    if result.success:
+        console.print(f"\n[bold green]✅ Job '{job_name}' completed successfully![/bold green]")
+        if not no_upload:
+            console.print("\n  Uploaded to: just-dna-seq/annotators on HuggingFace Hub")
+    else:
+        console.print(f"\n[bold red]❌ Job '{job_name}' failed![/bold red]")
+        raise typer.Exit(1)
+
+
+@app.command(name="superhuman")
+def dagster_run_superhuman(
+    no_upload: bool = typer.Option(
+        False,
+        "--no-upload",
+        help="Skip HuggingFace upload (still joins with Ensembl)"
+    ),
+    convert_only: bool = typer.Option(
+        False,
+        "--convert-only",
+        help="Convert only (no Ensembl join, no upload)"
+    ),
+):
+    """
+    Convert Superhuman to unified annotation schema.
+    
+    Note: This module has qualitative annotations (no numeric weights).
+    
+    Pipeline modes:
+    - Default: Full pipeline with Ensembl join + HuggingFace upload
+    - --no-upload: Convert + Ensembl join (no upload)
+    - --convert-only: Convert only (no Ensembl join, no upload)
+    """
+    from dagster import DagsterInstance
+    
+    dagster_home = _get_dagster_home()
+    _ensure_dagster_config(dagster_home)
+    
+    if convert_only:
+        job_name = "superhuman_convert"
+    elif no_upload:
+        job_name = "superhuman_full"
+    else:
+        job_name = "superhuman"
+    
+    console.print(f"\n[bold cyan]🔷 Running Dagster Job: {job_name}[/bold cyan]")
+    console.print(f"   Dagster home: {dagster_home}")
+    
+    _ensure_dagster_ui_running(force_restart=False)
+    
+    console.print("\n🚀 Executing pipeline...\n")
+    console.print("   Monitor progress at: http://127.0.0.1:3000\n")
+    
+    from prepare_annotations.definitions import defs
+    
+    job = defs.resolve_job_def(job_name)
+    
+    with DagsterInstance.get() as instance:
+        result = job.execute_in_process(instance=instance)
+    
+    if result.success:
+        console.print(f"\n[bold green]✅ Job '{job_name}' completed successfully![/bold green]")
+        if not no_upload:
+            console.print("\n  Uploaded to: just-dna-seq/annotators on HuggingFace Hub")
+    else:
+        console.print(f"\n[bold red]❌ Job '{job_name}' failed![/bold red]")
+        raise typer.Exit(1)
+
+
+@app.command(name="coronary")
+def dagster_run_coronary(
+    no_upload: bool = typer.Option(
+        False,
+        "--no-upload",
+        help="Skip HuggingFace upload (still joins with Ensembl)"
+    ),
+    convert_only: bool = typer.Option(
+        False,
+        "--convert-only",
+        help="Convert only (no Ensembl join, no upload)"
+    ),
+):
+    """
+    Convert Coronary Disease to unified annotation schema.
+    
+    Pipeline modes:
+    - Default: Full pipeline with Ensembl join + HuggingFace upload
+    - --no-upload: Convert + Ensembl join (no upload)
+    - --convert-only: Convert only (no Ensembl join, no upload)
+    """
+    from dagster import DagsterInstance
+    
+    dagster_home = _get_dagster_home()
+    _ensure_dagster_config(dagster_home)
+    
+    if convert_only:
+        job_name = "coronary_convert"
+    elif no_upload:
+        job_name = "coronary_full"
+    else:
+        job_name = "coronary"
+    
+    console.print(f"\n[bold cyan]🔷 Running Dagster Job: {job_name}[/bold cyan]")
+    console.print(f"   Dagster home: {dagster_home}")
+    
+    _ensure_dagster_ui_running(force_restart=False)
+    
+    console.print("\n🚀 Executing pipeline...\n")
+    console.print("   Monitor progress at: http://127.0.0.1:3000\n")
+    
+    from prepare_annotations.definitions import defs
+    
+    job = defs.resolve_job_def(job_name)
+    
+    with DagsterInstance.get() as instance:
+        result = job.execute_in_process(instance=instance)
+    
+    if result.success:
+        console.print(f"\n[bold green]✅ Job '{job_name}' completed successfully![/bold green]")
+        if not no_upload:
+            console.print("\n  Uploaded to: just-dna-seq/annotators on HuggingFace Hub")
+    else:
+        console.print(f"\n[bold red]❌ Job '{job_name}' failed![/bold red]")
+        raise typer.Exit(1)
+
+
+@app.command(name="all-modules")
+def dagster_run_all_modules(
+    no_upload: bool = typer.Option(
+        False,
+        "--no-upload",
+        help="Skip HuggingFace upload (still joins with Ensembl)"
+    ),
+    convert_only: bool = typer.Option(
+        False,
+        "--convert-only",
+        help="Convert only (no Ensembl join, no upload)"
+    ),
+):
+    """
+    Convert ALL annotation modules to unified schema.
+    
+    This runs pipelines for all modules:
+    - longevitymap
+    - lipidmetabolism
+    - vo2max
+    - superhuman
+    - coronary
+    
+    Pipeline modes:
+    - Default: Full pipeline with Ensembl join + HuggingFace upload
+    - --no-upload: Convert + Ensembl join (no upload)
+    - --convert-only: Convert only (no Ensembl join, no upload)
+    """
+    from dagster import DagsterInstance
+    
+    dagster_home = _get_dagster_home()
+    _ensure_dagster_config(dagster_home)
+    
+    if convert_only:
+        job_name = "all_modules_convert"
+    elif no_upload:
+        job_name = "all_modules_full"
+    else:
+        job_name = "all_modules"
+    
+    console.print(f"\n[bold cyan]🔷 Running Dagster Job: {job_name}[/bold cyan]")
+    console.print(f"   Dagster home: {dagster_home}")
+    
+    _ensure_dagster_ui_running(force_restart=False)
+    
+    console.print("\n🚀 Executing pipeline for ALL modules...\n")
+    console.print("   Monitor progress at: http://127.0.0.1:3000\n")
+    
+    from prepare_annotations.definitions import defs
+    
+    job = defs.resolve_job_def(job_name)
+    
+    with DagsterInstance.get() as instance:
+        result = job.execute_in_process(instance=instance)
+    
+    if result.success:
+        console.print(f"\n[bold green]✅ Job '{job_name}' completed successfully![/bold green]")
+        console.print("\nModules converted:")
+        console.print("  - longevitymap")
+        console.print("  - lipidmetabolism")
+        console.print("  - vo2max")
+        console.print("  - superhuman")
+        console.print("  - coronary")
+        if not no_upload:
+            console.print("\n  Uploaded to: just-dna-seq/annotators on HuggingFace Hub")
+    else:
+        console.print(f"\n[bold red]❌ Job '{job_name}' failed![/bold red]")
+        raise typer.Exit(1)
+
+
+@app.command(name="graph")
+def generate_graph(
+    output: str = typer.Option(
+        "images/pipelines",
+        "--output", "-o",
+        help="Output file path (without extension)"
+    ),
+    format: str = typer.Option(
+        "jpg",
+        "--format", "-f",
+        help="Output format: jpg, png, svg, pdf"
+    ),
+    direction: str = typer.Option(
+        "LR",
+        "--direction", "-d",
+        help="Graph direction: LR (left-right) or TB (top-bottom)"
+    ),
+    dpi: int = typer.Option(
+        150,
+        "--dpi",
+        help="DPI for raster formats (jpg, png)"
+    ),
+    title: str = typer.Option(
+        "Prepare Annotations Pipeline",
+        "--title", "-t",
+        help="Graph title"
+    ),
+):
+    """
+    Generate Dagster asset lineage graph as an image.
+    
+    Creates a visual representation of the full asset dependency graph
+    from the Dagster definitions. Useful for documentation and README files.
+    
+    Examples:
+        uv run prepare-annotations graph
+        uv run prepare-annotations graph --format svg --direction TB
+        uv run prepare-annotations graph -o docs/lineage -f png --dpi 300
+    """
+    from prepare_annotations.core.visualization import generate_pipeline_graph_from_module
+    
+    console.print(f"\n[bold cyan]🔷 Generating Lineage Graph[/bold cyan]")
+    console.print(f"   Output: {output}.{format}")
+    console.print(f"   Direction: {direction}")
+    console.print(f"   DPI: {dpi}\n")
+    
+    output_path = Path(output)
+    
+    result_path = generate_pipeline_graph_from_module(
+        module_path="prepare_annotations.definitions",
+        output_path=output_path,
+        output_format=format,
+        title=title,
+        rankdir=direction,
+        dpi=dpi,
+    )
+    
+    console.print(f"[bold green]✅ Graph generated: {result_path}[/bold green]")
 
 
 def _register_dagster_commands() -> None:
@@ -1820,6 +2184,12 @@ def _register_dagster_commands() -> None:
     dagster_app.command(name="assets")(dagster_list_assets)
     dagster_app.command(name="jobs")(dagster_list_jobs)
     dagster_app.command(name="longevitymap")(dagster_run_longevitymap)
+    dagster_app.command(name="lipidmetabolism")(dagster_run_lipidmetabolism)
+    dagster_app.command(name="vo2max")(dagster_run_vo2max)
+    dagster_app.command(name="superhuman")(dagster_run_superhuman)
+    dagster_app.command(name="coronary")(dagster_run_coronary)
+    dagster_app.command(name="all-modules")(dagster_run_all_modules)
+    dagster_app.command(name="graph")(generate_graph)
 
 
 _register_dagster_commands()

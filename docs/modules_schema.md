@@ -225,11 +225,11 @@ Each weight entry includes provenance information:
 
 | Module | Curator | Method |
 |--------|---------|--------|
-| `longevitymap` | LongevityMap | literature_review |
-| `lipidmetabolism` | just-dna-seq | literature_review |
-| `vo2max` | just-dna-seq | literature_review |
-| `superhuman` | just-dna-seq | literature_review |
-| `coronary` | just-dna-seq | gwas_literature |
+| `longevitymap` | Olga Borysova | literature_review |
+| `lipidmetabolism` | Olga Borysova | literature_review |
+| `vo2max` | Olga Borysova | literature_review |
+| `superhuman` | Olga Borysova | literature_review |
+| `coronary` | Olga Borysova | gwas_literature |
 | `drugs` | PharmGKB | pharmacogenomics_db |
 
 ---

@@ -166,7 +166,7 @@ def convert_longevitymap_weights(
     ):
         conn = sqlite3.connect(db_path)
         
-        # Load weights with variant conclusions
+        # Load weights with one conclusion per rsid (variant table has multiple rows per rsid)
         weights_query = """
         SELECT 
             aw.rsid,
@@ -175,9 +175,8 @@ def convert_longevitymap_weights(
             aw.zygosity,
             aw.weight,
             aw.priority,
-            v.conclusions as conclusion
+            (SELECT conclusions FROM variant WHERE identifier = aw.rsid LIMIT 1) as conclusion
         FROM allele_weights aw
-        LEFT JOIN variant v ON v.identifier = aw.rsid
         """
         weights_raw = pl.read_database(weights_query, connection=conn).lazy()
         conn.close()
@@ -266,8 +265,8 @@ def convert_longevitymap_weights(
         )
         
         # Deduplicate by (rsid, genotype, module) - keep first occurrence
-        # Note: conclusion in weights should be genotype-specific, but longevitymap
-        # only has study-level conclusions. We keep NULL for consistency with schema.
+        # Note: conclusion is study-level (from variant table), not genotype-specific,
+        # but we include it for convenience. Full study details are in studies.parquet.
         result = (
             normalized
             .group_by(["rsid", "genotype", "module"])
@@ -275,9 +274,7 @@ def convert_longevitymap_weights(
                 pl.col("weight").first(),
                 pl.col("state").first(),
                 pl.col("priority").first(),
-                # Set conclusion to NULL as longevitymap doesn't have genotype-specific conclusions
-                # Study conclusions are in studies.parquet
-                pl.lit(None).cast(pl.Utf8).alias("conclusion"),
+                pl.col("conclusion").first(),
                 pl.col("curator").first(),
                 pl.col("method").first(),
             ])

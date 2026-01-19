@@ -401,70 +401,8 @@ class PreparationPipelines:
             alts_list=alts_list,
         )
 
-    @staticmethod
-    def download_ensembl(
-        species: str = "homo_sapiens",
-        dest_dir: Optional[Path] = None,
-        vcf_dir: Optional[Path] = None,
-        parquet_dir: Optional[Path] = None,
-        with_splitting: bool = False,
-        explode_snv_alt: bool = False,
-        alts_list: bool = True,
-        log: bool = True,
-        pattern: Optional[str] = None,
-        url: Optional[str] = None,
-        http_max_pool: Optional[int] = None,
-        http_chunk_size: Optional[int] = None,
-        connect_timeout: Optional[float] = None,
-        sock_read_timeout: Optional[float] = None,
-        retries: Optional[int] = None,
-        verify_checksums: bool = True,
-    ) -> PreparationResult:
-        PreparationPipelines._setup_logging("download_ensembl", log)
-        
-        if url:
-            base_dir = Path(dest_dir) if dest_dir else get_default_cache_dir("ensembl_custom")
-            species_dir = base_dir / species
-            return prepare_vcf_source(
-                url=url,
-                pattern=pattern,
-                name="ensembl_custom",
-                dest_dir=species_dir,
-                vcf_dir=vcf_dir,
-                parquet_dir=parquet_dir,
-                with_splitting=with_splitting,
-                explode_snv_alt=explode_snv_alt,
-                alts_list=alts_list,
-                http_max_pool=http_max_pool,
-                http_chunk_size=http_chunk_size,
-                connect_timeout=connect_timeout,
-                sock_read_timeout=sock_read_timeout,
-                retries=retries,
-                verify_checksums=verify_checksums,
-            )
-            
-        base_dir = Path(dest_dir) if dest_dir else get_default_cache_dir("ensembl")
-        species_dir = base_dir / species
-        url = f"https://ftp.ensembl.org/pub/current_variation/vcf/{species}/"
-        default_pattern = rf"{species}-chr([^.]+)\.vcf\.gz$"
-        
-        return prepare_vcf_source(
-            url=url,
-            pattern=pattern or default_pattern,
-            name="ensembl",
-            dest_dir=species_dir,
-            vcf_dir=vcf_dir,
-            parquet_dir=parquet_dir,
-            with_splitting=with_splitting,
-            explode_snv_alt=explode_snv_alt,
-            alts_list=alts_list,
-            http_max_pool=http_max_pool,
-            http_chunk_size=http_chunk_size,
-            connect_timeout=connect_timeout,
-            sock_read_timeout=sock_read_timeout,
-            retries=retries,
-            verify_checksums=verify_checksums,
-        )
+    # NOTE: download_ensembl was removed - now handled by Dagster assets in assets/ensembl.py
+    # Use `uv run prepare ensembl` which runs the Dagster pipeline
     
     @staticmethod
     def download_dbsnp(
