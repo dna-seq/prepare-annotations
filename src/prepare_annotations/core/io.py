@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Union, Optional, Literal, Tuple, TypeVar
 import polars as pl
 import polars_bio as pb
+from dagster import TableSchema, TableColumn
 from eliot import start_action
 import os
 import pooch
@@ -24,6 +25,41 @@ AnnotatedLazyFrame = AnnotatedResult[pl.LazyFrame]
 # - "auto": save next to the input, replacing .vcf/.vcf.gz with .parquet
 # - Path: save to the provided absolute/relative path
 SaveParquet = Union[Path, Literal["auto"], None]
+
+
+def polars_schema_to_table_schema(source: Union[pl.LazyFrame, Path, str]) -> TableSchema:
+    """
+    Convert a Polars schema to Dagster TableSchema for UI display.
+    
+    This enables schema visualization in Dagster UI without changing IO managers.
+    Works with LazyFrames (lightweight - only reads schema, not data) or parquet paths.
+    
+    Args:
+        source: Either a Polars LazyFrame or path to a parquet file
+        
+    Returns:
+        Dagster TableSchema with column names and types
+        
+    Example:
+        >>> lf = pl.scan_parquet("data.parquet")
+        >>> schema = polars_schema_to_table_schema(lf)
+        >>> # Use in asset Output metadata:
+        >>> return Output(path, metadata={"dagster/column_schema": schema})
+    """
+    if isinstance(source, (str, Path)):
+        lf = pl.scan_parquet(str(source))
+    else:
+        lf = source
+    
+    # collect_schema() is lightweight - just reads parquet metadata, not data
+    schema_dict = lf.collect_schema()
+    
+    return TableSchema(
+        columns=[
+            TableColumn(name=col, type=str(dtype))
+            for col, dtype in schema_dict.items()
+        ]
+    )
 
 
 def _strip_vcf_suffix(vcf_path: Path) -> Path:

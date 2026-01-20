@@ -4,6 +4,7 @@ Dagster assets for genomic data preparation.
 This module contains Dagster asset definitions organized by domain:
 - ensembl: Ensembl VCF download and conversion assets
 - modules: OakVar module conversion assets
+- checks: Asset checks for output validation (memory-efficient LazyFrame-based)
 """
 from prepare_annotations.assets.ensembl import (
     ensembl_ftp_source,
@@ -15,6 +16,7 @@ from prepare_annotations.assets.ensembl import (
     ENSEMBL_VCF_PARTITIONS,
     download_retry_policy,
 )
+from prepare_annotations.assets.checks import all_module_checks
 from prepare_annotations.assets.modules import (
     ensembl_variations_source,
     # LongevityMap

@@ -27,6 +27,7 @@ from prepare_annotations.core.paths import (
     MODULES_DIR,
     MODULES_OUTPUT_DIR,
 )
+from prepare_annotations.core.io import polars_schema_to_table_schema
 from prepare_annotations.core.dagster_configs import (
     EnsemblSourceConfig,
     LongevityMapSourceConfig,
@@ -281,91 +282,67 @@ def get_longevitymap_output_dir(config: LongevityMapConfig) -> Path:
 @asset(
     description="LongevityMap annotations converted to unified schema.",
     compute_kind="conversion",
-    io_manager_key="module_io_manager",
+    io_manager_key="polars_parquet_io_manager",
     metadata={
         "schema": "rsid, module, gene, phenotype, category",
         "format": "parquet",
+        "compression": "zstd",
+        "compression_level": 14,
     },
     op_tags={"dagster/concurrency_key": "module_conversion"},
 )
 def longevitymap_annotations(
     context: AssetExecutionContext,
     longevitymap_sqlite: Path,
-    config: LongevityMapConfig,
-) -> Output[Path]:
+) -> pl.LazyFrame:
     """
     Convert LongevityMap to annotations.parquet.
     
     Schema: rsid, module, gene, phenotype, category
+    
+    Uses dagster-polars PolarsParquetIOManager for:
+    - Automatic sink_parquet (streaming, memory-efficient)
+    - Schema metadata in Dagster UI
+    - Sample data preview
     """
     logger = context.log
-    
-    output_dir = get_longevitymap_output_dir(config)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    output_path = output_dir / "annotations.parquet"
-    
     logger.info(f"Converting annotations from {longevitymap_sqlite}")
     
     with start_action(action_type="convert_longevitymap_annotations", db_path=str(longevitymap_sqlite)):
-        annotations = convert_longevitymap_annotations(longevitymap_sqlite)
-        annotations.sink_parquet(output_path, engine="streaming")
-    
-    row_count = pl.scan_parquet(output_path).select(pl.len()).collect().item()
-    logger.info(f"Wrote {row_count} annotations to {output_path}")
-    
-    return Output(
-        output_path,
-        metadata={
-            "row_count": MetadataValue.int(row_count),
-            "output_path": MetadataValue.path(str(output_path)),
-            "module": MetadataValue.text(config.module_name),
-        },
-    )
+        return convert_longevitymap_annotations(longevitymap_sqlite)
 
 
 @asset(
     description="LongevityMap studies converted to unified schema.",
     compute_kind="conversion",
-    io_manager_key="module_io_manager",
+    io_manager_key="polars_parquet_io_manager",
     metadata={
         "schema": "rsid, module, pmid, population, p_value, conclusion, study_design",
         "format": "parquet",
+        "compression": "zstd",
+        "compression_level": 14,
     },
     op_tags={"dagster/concurrency_key": "module_conversion"},
 )
 def longevitymap_studies(
     context: AssetExecutionContext,
     longevitymap_sqlite: Path,
-    config: LongevityMapConfig,
-) -> Output[Path]:
+) -> pl.LazyFrame:
     """
     Convert LongevityMap to studies.parquet.
     
     Schema: rsid, module, pmid, population, p_value, conclusion, study_design
+    
+    Uses dagster-polars PolarsParquetIOManager for:
+    - Automatic sink_parquet (streaming, memory-efficient)
+    - Schema metadata in Dagster UI
+    - Sample data preview
     """
     logger = context.log
-    
-    output_dir = get_longevitymap_output_dir(config)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    output_path = output_dir / "studies.parquet"
-    
     logger.info(f"Converting studies from {longevitymap_sqlite}")
     
     with start_action(action_type="convert_longevitymap_studies", db_path=str(longevitymap_sqlite)):
-        studies = convert_longevitymap_studies(longevitymap_sqlite)
-        studies.sink_parquet(output_path, engine="streaming")
-    
-    row_count = pl.scan_parquet(output_path).select(pl.len()).collect().item()
-    logger.info(f"Wrote {row_count} studies to {output_path}")
-    
-    return Output(
-        output_path,
-        metadata={
-            "row_count": MetadataValue.int(row_count),
-            "output_path": MetadataValue.path(str(output_path)),
-            "module": MetadataValue.text(config.module_name),
-        },
-    )
+        return convert_longevitymap_studies(longevitymap_sqlite)
 
 
 @asset(
@@ -501,6 +478,7 @@ def longevitymap_with_ensembl(
     return Output(
         output_path,
         metadata={
+            "dagster/column_schema": polars_schema_to_table_schema(output_path),
             "row_count": MetadataValue.int(row_count),
             "output_path": MetadataValue.path(str(output_path)),
         },
@@ -659,8 +637,8 @@ def join_weights_with_ensembl_duckdb(
 )
 def longevitymap_hf_upload(
     context: AssetExecutionContext,
-    longevitymap_annotations: Path,
-    longevitymap_studies: Path,
+    longevitymap_annotations: pl.LazyFrame,
+    longevitymap_studies: pl.LazyFrame,
     longevitymap_with_ensembl: Path,
     config: AnnotatorsUploadConfig,
 ) -> Output[dict]:
@@ -675,22 +653,33 @@ def longevitymap_hf_upload(
     
     Uses batch upload for efficiency (single commit for all files).
     Only uploads files that differ in size from remote versions.
+    
+    Note: annotations and studies are LazyFrame inputs from dagster-polars IO manager,
+    the file paths are computed from the IO manager's base_dir convention.
     """
     from prepare_annotations.huggingface.uploader import upload_files_batch
     
     logger = context.log
     
-    # Collect all parquet files
-    # Note: we use longevitymap_with_ensembl as the weights file for publishing
-    # as it contains the genotypes resolved and enriched with Ensembl data.
+    # For LazyFrame inputs from dagster-polars, compute paths from IO manager convention
+    # dagster-polars stores at: base_dir / asset_key.parquet
+    annotations_path = MODULES_OUTPUT_DIR / "longevitymap_annotations.parquet"
+    studies_path = MODULES_OUTPUT_DIR / "longevitymap_studies.parquet"
+    
+    # Verify the files exist (they should, since dagster-polars wrote them)
+    if not annotations_path.exists():
+        raise FileNotFoundError(f"Annotations file not found at {annotations_path}")
+    if not studies_path.exists():
+        raise FileNotFoundError(f"Studies file not found at {studies_path}")
+    
+    # longevitymap_with_ensembl is still Path-based (uses DuckDB)
     parquet_files = [
-        longevitymap_annotations,
-        longevitymap_studies,
+        annotations_path,
+        studies_path,
         longevitymap_with_ensembl,
     ]
     
     # Create paths in repo (data/longevitymap/filename.parquet)
-    # We explicitly name them to ensure the joined file is published as weights.parquet
     path_in_repos = [
         f"{config.path_prefix}/longevitymap/annotations.parquet",
         f"{config.path_prefix}/longevitymap/studies.parquet",
@@ -932,6 +921,7 @@ def lipidmetabolism_annotations(
     return Output(
         output_path,
         metadata={
+            "dagster/column_schema": polars_schema_to_table_schema(output_path),
             "row_count": MetadataValue.int(row_count),
             "output_path": MetadataValue.path(str(output_path)),
             "module": MetadataValue.text(config.module_name),
@@ -969,6 +959,7 @@ def lipidmetabolism_studies(
     return Output(
         output_path,
         metadata={
+            "dagster/column_schema": polars_schema_to_table_schema(output_path),
             "row_count": MetadataValue.int(row_count),
             "output_path": MetadataValue.path(str(output_path)),
             "module": MetadataValue.text(config.module_name),
@@ -1010,6 +1001,7 @@ def lipidmetabolism_weights(
     return Output(
         output_path,
         metadata={
+            "dagster/column_schema": polars_schema_to_table_schema(output_path),
             "row_count": MetadataValue.int(row_count),
             "output_path": MetadataValue.path(str(output_path)),
             "module": MetadataValue.text(config.module_name),
@@ -1051,7 +1043,7 @@ def lipidmetabolism_with_ensembl(
     row_count = pl.scan_parquet(output_path).select(pl.len()).collect().item()
     logger.info(f"Wrote {row_count} joined rows to {output_path}")
     
-    return Output(output_path, metadata={"row_count": MetadataValue.int(row_count), "output_path": MetadataValue.path(str(output_path))})
+    return Output(output_path, metadata={"dagster/column_schema": polars_schema_to_table_schema(output_path), "row_count": MetadataValue.int(row_count), "output_path": MetadataValue.path(str(output_path))})
 
 
 @asset(
@@ -1190,6 +1182,7 @@ def vo2max_annotations(
     return Output(
         output_path,
         metadata={
+            "dagster/column_schema": polars_schema_to_table_schema(output_path),
             "row_count": MetadataValue.int(row_count),
             "output_path": MetadataValue.path(str(output_path)),
             "module": MetadataValue.text(config.module_name),
@@ -1227,6 +1220,7 @@ def vo2max_studies(
     return Output(
         output_path,
         metadata={
+            "dagster/column_schema": polars_schema_to_table_schema(output_path),
             "row_count": MetadataValue.int(row_count),
             "output_path": MetadataValue.path(str(output_path)),
             "module": MetadataValue.text(config.module_name),
@@ -1268,6 +1262,7 @@ def vo2max_weights(
     return Output(
         output_path,
         metadata={
+            "dagster/column_schema": polars_schema_to_table_schema(output_path),
             "row_count": MetadataValue.int(row_count),
             "output_path": MetadataValue.path(str(output_path)),
             "module": MetadataValue.text(config.module_name),
@@ -1309,7 +1304,7 @@ def vo2max_with_ensembl(
     row_count = pl.scan_parquet(output_path).select(pl.len()).collect().item()
     logger.info(f"Wrote {row_count} joined rows to {output_path}")
     
-    return Output(output_path, metadata={"row_count": MetadataValue.int(row_count), "output_path": MetadataValue.path(str(output_path))})
+    return Output(output_path, metadata={"dagster/column_schema": polars_schema_to_table_schema(output_path), "row_count": MetadataValue.int(row_count), "output_path": MetadataValue.path(str(output_path))})
 
 
 @asset(
@@ -1448,6 +1443,7 @@ def superhuman_annotations(
     return Output(
         output_path,
         metadata={
+            "dagster/column_schema": polars_schema_to_table_schema(output_path),
             "row_count": MetadataValue.int(row_count),
             "output_path": MetadataValue.path(str(output_path)),
             "module": MetadataValue.text(config.module_name),
@@ -1485,6 +1481,7 @@ def superhuman_studies(
     return Output(
         output_path,
         metadata={
+            "dagster/column_schema": polars_schema_to_table_schema(output_path),
             "row_count": MetadataValue.int(row_count),
             "output_path": MetadataValue.path(str(output_path)),
             "module": MetadataValue.text(config.module_name),
@@ -1526,6 +1523,7 @@ def superhuman_weights(
     return Output(
         output_path,
         metadata={
+            "dagster/column_schema": polars_schema_to_table_schema(output_path),
             "row_count": MetadataValue.int(row_count),
             "output_path": MetadataValue.path(str(output_path)),
             "module": MetadataValue.text(config.module_name),
@@ -1567,7 +1565,7 @@ def superhuman_with_ensembl(
     row_count = pl.scan_parquet(output_path).select(pl.len()).collect().item()
     logger.info(f"Wrote {row_count} joined rows to {output_path}")
     
-    return Output(output_path, metadata={"row_count": MetadataValue.int(row_count), "output_path": MetadataValue.path(str(output_path))})
+    return Output(output_path, metadata={"dagster/column_schema": polars_schema_to_table_schema(output_path), "row_count": MetadataValue.int(row_count), "output_path": MetadataValue.path(str(output_path))})
 
 
 @asset(
@@ -1706,6 +1704,7 @@ def coronary_annotations(
     return Output(
         output_path,
         metadata={
+            "dagster/column_schema": polars_schema_to_table_schema(output_path),
             "row_count": MetadataValue.int(row_count),
             "output_path": MetadataValue.path(str(output_path)),
             "module": MetadataValue.text(config.module_name),
@@ -1743,6 +1742,7 @@ def coronary_studies(
     return Output(
         output_path,
         metadata={
+            "dagster/column_schema": polars_schema_to_table_schema(output_path),
             "row_count": MetadataValue.int(row_count),
             "output_path": MetadataValue.path(str(output_path)),
             "module": MetadataValue.text(config.module_name),
@@ -1784,6 +1784,7 @@ def coronary_weights(
     return Output(
         output_path,
         metadata={
+            "dagster/column_schema": polars_schema_to_table_schema(output_path),
             "row_count": MetadataValue.int(row_count),
             "output_path": MetadataValue.path(str(output_path)),
             "module": MetadataValue.text(config.module_name),
@@ -1825,7 +1826,7 @@ def coronary_with_ensembl(
     row_count = pl.scan_parquet(output_path).select(pl.len()).collect().item()
     logger.info(f"Wrote {row_count} joined rows to {output_path}")
     
-    return Output(output_path, metadata={"row_count": MetadataValue.int(row_count), "output_path": MetadataValue.path(str(output_path))})
+    return Output(output_path, metadata={"dagster/column_schema": polars_schema_to_table_schema(output_path), "row_count": MetadataValue.int(row_count), "output_path": MetadataValue.path(str(output_path))})
 
 
 @asset(

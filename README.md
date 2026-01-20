@@ -67,8 +67,25 @@ The `modules` command manages OakVar modules from the [dna-seq GitHub organizati
 uv run modules data --repo dna-seq/just_longevitymap
 
 # Convert module data to unified schema
-uv run modules convert-longevitymap
+uv run prepare longevitymap --convert-only
 ```
+
+**Available modules**: `just_longevitymap`, `just_coronary`, `just_vo2max`, `just_lipidmetabolism`, `just_superhuman`, `just_drugs`, `just_pathogenic`, `just_cancer`, `just_prs`
+
+### Unified Annotation Schema
+
+Module conversion produces three standardized parquet files:
+
+| File | Schema |
+|------|--------|
+| **annotations.parquet** | `rsid, module, gene, phenotype, category` |
+| **studies.parquet** | `rsid, module, pmid, population, p_value, conclusion, study_design` |
+| **weights.parquet** | `rsid, genotype, module, weight, state, priority, conclusion, curator, method` |
+
+- **State**: `protective`, `risk`, or `neutral`
+- **Genotype**: List of 2 alleles, alphabetically sorted
+
+Converted datasets are uploaded to the [`just-dna-seq`](https://huggingface.co/just-dna-seq) organization on HuggingFace Hub.
 
 ## Package Structure
 

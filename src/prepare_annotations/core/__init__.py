@@ -16,6 +16,7 @@ from prepare_annotations.core.io import (
     is_parquet,
     get_info_fields,
     get_default_threads,
+    polars_schema_to_table_schema,
     AnnotatedResult,
     AnnotatedLazyFrame,
     SaveParquet,

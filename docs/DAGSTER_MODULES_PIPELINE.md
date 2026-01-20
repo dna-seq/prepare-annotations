@@ -10,6 +10,8 @@ Each module converts curated variant data from the [dna-seq](https://github.com/
 
 - **Unified schema output**: Produces three standardized Parquet tables (annotations, studies, weights) following the [modules schema](modules_schema.md).
 - **Lazy streaming**: Uses Polars `LazyFrame.sink_parquet(..., engine="streaming")` for memory-safe writes.
+- **dagster-polars integration**: Small assets use `PolarsParquetIOManager` for automatic schema visibility in UI.
+- **Asset checks**: All jobs include validation checks for schema, value constraints, and data quality.
 - **Idempotent downloads**: SQLite databases are cached locally and only re-downloaded if `force_download=True`.
 - **Batch HuggingFace upload**: All files uploaded in single commits for efficiency.
 
@@ -17,13 +19,13 @@ Each module converts curated variant data from the [dna-seq](https://github.com/
 
 ### Available Modules
 
-| Module | Description | GitHub Repo | Has Ensembl Join |
-|--------|-------------|-------------|------------------|
-| `longevitymap` | Longevity-associated variants | dna-seq/just_longevitymap | ✅ Yes |
-| `lipidmetabolism` | Lipid metabolism variants | dna-seq/just_lipidmetabolism | ❌ No |
-| `vo2max` | VO2max/athletic performance | dna-seq/just_vo2max | ❌ No |
-| `superhuman` | Elite performance genetics | dna-seq/just_superhuman | ❌ No |
-| `coronary` | Coronary disease variants | dna-seq/just_coronary | ❌ No |
+| Module | Description | GitHub Repo | Ensembl Join | dagster-polars |
+|--------|-------------|-------------|--------------|----------------|
+| `longevitymap` | Longevity-associated variants | dna-seq/just_longevitymap | ✅ Yes | ✅ annotations, studies |
+| `lipidmetabolism` | Lipid metabolism variants | dna-seq/just_lipidmetabolism | ✅ Yes | ❌ |
+| `vo2max` | VO2max/athletic performance | dna-seq/just_vo2max | ✅ Yes | ❌ |
+| `superhuman` | Elite performance genetics | dna-seq/just_superhuman | ✅ Yes | ❌ |
+| `coronary` | Coronary disease variants | dna-seq/just_coronary | ✅ Yes | ❌ |
 
 ---
 
@@ -166,6 +168,59 @@ All modules produce three parquet files following the unified schema:
 
 ---
 
+### IO Managers
+
+The pipeline uses multiple IO managers for different asset types:
+
+| IO Manager | Assets | Purpose |
+|------------|--------|---------|
+| `polars_parquet_io_manager` | `longevitymap_annotations`, `longevitymap_studies` | Automatic schema visibility, sample preview |
+| `module_io_manager` | All other parquet assets | Path-based storage for large data, DuckDB joins |
+| `hf_upload_io_manager` | `*_hf_upload` assets | Upload result tracking |
+
+#### dagster-polars Benefits
+
+Assets using `polars_parquet_io_manager` get automatic:
+- **Schema metadata** - Column names and types in Dagster UI
+- **Sample data preview** - First rows displayed
+- **Row count** - Automatic counting
+- **Streaming writes** - Memory-efficient `sink_parquet()`
+
+#### File Storage Locations
+
+- **dagster-polars assets**: `data/output/modules/{asset_key}.parquet`
+- **Path-based assets**: `data/output/modules/{module_name}/{file}.parquet`
+
+---
+
+### Asset Checks
+
+All module conversion jobs include validation checks that run after materialization:
+
+| Check | Validates |
+|-------|-----------|
+| `check_{module}_weights` | Schema, genotype format, state values, weight constraints |
+| `check_{module}_annotations` | Schema, module column, required columns |
+| `check_{module}_studies` | Schema, module column, PMID format |
+
+Checks are:
+- **LazyFrame-based**: Use `pl.scan_parquet()` to avoid loading full data
+- **Fail-fast**: Return early on first failure
+- **Metadata-rich**: Include debugging info in results
+
+#### Running Checks
+
+Checks run automatically with jobs:
+
+```bash
+# Jobs include checks via AssetSelection.checks_for_assets()
+uv run prepare longevitymap  # Runs assets + checks
+```
+
+Or run checks explicitly in Dagster UI under "Asset Checks" tab.
+
+---
+
 ### On-Disk Layout
 
 ```
@@ -206,43 +261,34 @@ prepare-annotations/
 
 ### How to Run
 
-#### Individual Module Pipelines
+#### Recommended: CLI Commands
 
 ```bash
-# LongevityMap (with Ensembl join)
-uv run dagster job execute -m prepare_annotations.definitions -j longevitymap
+# LongevityMap (with Ensembl join + checks)
+uv run prepare longevitymap
 
 # LipidMetabolism
-uv run dagster job execute -m prepare_annotations.definitions -j lipidmetabolism
+uv run prepare lipidmetabolism
 
 # VO2Max
-uv run dagster job execute -m prepare_annotations.definitions -j vo2max
+uv run prepare vo2max
 
 # Superhuman
-uv run dagster job execute -m prepare_annotations.definitions -j superhuman
+uv run prepare superhuman
 
 # Coronary
-uv run dagster job execute -m prepare_annotations.definitions -j coronary
+uv run prepare coronary
+
+# All modules at once
+uv run prepare all-modules
 ```
 
 #### Convert Only (No Upload)
 
 ```bash
-# Add _convert suffix to skip HuggingFace upload
-uv run dagster job execute -m prepare_annotations.definitions -j lipidmetabolism_convert
-uv run dagster job execute -m prepare_annotations.definitions -j vo2max_convert
-uv run dagster job execute -m prepare_annotations.definitions -j superhuman_convert
-uv run dagster job execute -m prepare_annotations.definitions -j coronary_convert
-```
-
-#### All Modules
-
-```bash
-# Convert and upload all modules
-uv run dagster job execute -m prepare_annotations.definitions -j all_modules
-
-# Convert only (no upload)
-uv run dagster job execute -m prepare_annotations.definitions -j all_modules_convert
+uv run prepare longevitymap --convert-only
+uv run prepare lipidmetabolism --convert-only
+uv run prepare all-modules --convert-only
 ```
 
 #### Run via Dagster UI
@@ -251,27 +297,45 @@ uv run dagster job execute -m prepare_annotations.definitions -j all_modules_con
 uv run dagster-ui
 ```
 
-Then navigate to Jobs in the UI to materialize assets.
+Then navigate to Jobs in the UI to materialize assets and view asset checks.
+
+#### Alternative: Dagster Dev Server
+
+```bash
+# Start dev server with hot reload
+uv run dagster dev -m prepare_annotations.definitions
+
+# Open http://localhost:3000 to access UI
+```
+
+> **Note**: Avoid using `dagster job execute` CLI - it's deprecated. Use the `uv run prepare` commands or Dagster UI instead.
 
 ---
 
 ### Jobs Provided
 
-| Job | Description |
-|-----|-------------|
-| `longevitymap` | Full: convert + Ensembl join + upload |
-| `longevitymap_full` | Convert + Ensembl join (no upload) |
-| `longevitymap_convert` | Convert only |
-| `lipidmetabolism` | Full: convert + upload |
-| `lipidmetabolism_convert` | Convert only |
-| `vo2max` | Full: convert + upload |
-| `vo2max_convert` | Convert only |
-| `superhuman` | Full: convert + upload |
-| `superhuman_convert` | Convert only |
-| `coronary` | Full: convert + upload |
-| `coronary_convert` | Convert only |
-| `all_modules` | Full pipeline for all modules |
-| `all_modules_convert` | Convert all modules (no upload) |
+All jobs include asset checks for validation.
+
+| Job | Description | Includes Checks |
+|-----|-------------|-----------------|
+| `longevitymap` | Full: convert + Ensembl join + upload | ✅ |
+| `longevitymap_full` | Convert + Ensembl join (no upload) | ✅ |
+| `longevitymap_convert` | Convert only | ✅ |
+| `lipidmetabolism` | Full: convert + Ensembl join + upload | ✅ |
+| `lipidmetabolism_full` | Convert + Ensembl join (no upload) | ✅ |
+| `lipidmetabolism_convert` | Convert only | ✅ |
+| `vo2max` | Full: convert + Ensembl join + upload | ✅ |
+| `vo2max_full` | Convert + Ensembl join (no upload) | ✅ |
+| `vo2max_convert` | Convert only | ✅ |
+| `superhuman` | Full: convert + Ensembl join + upload | ✅ |
+| `superhuman_full` | Convert + Ensembl join (no upload) | ✅ |
+| `superhuman_convert` | Convert only | ✅ |
+| `coronary` | Full: convert + Ensembl join + upload | ✅ |
+| `coronary_full` | Convert + Ensembl join (no upload) | ✅ |
+| `coronary_convert` | Convert only | ✅ |
+| `all_modules` | Full pipeline for all modules | ✅ |
+| `all_modules_full` | All modules + Ensembl joins (no upload) | ✅ |
+| `all_modules_convert` | Convert all modules (no upload) | ✅ |
 
 ---
 
