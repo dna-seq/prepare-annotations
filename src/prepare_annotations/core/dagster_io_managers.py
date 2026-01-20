@@ -124,60 +124,64 @@ class ModuleIOManager(IOManager):
     """
     IO Manager for OakVar module assets.
     
+    This IO manager stores the actual paths returned by assets, so downstream
+    assets can load them correctly without needing to guess/reconstruct paths.
+    
     Handles paths for:
     - Module SQLite databases in data/modules/just_{module}/
     - Converted parquet files in data/output/modules/{module}/
+    
+    Path metadata is stored in a JSON file alongside the Dagster storage.
     """
     
-    # Mapping of asset keys to actual SQLite filenames (as they exist in GitHub repos)
-    SQLITE_FILENAMES: dict[str, str] = {
-        "longevitymap": "longevitymap.sqlite",
-        "lipidmetabolism": "lipid_metabolism.sqlite",
-        "vo2max": "vo2max.sqlite",
-        "superhuman": "superhuman.sqlite",
-        "coronary": "coronary.sqlite",
-    }
+    def __init__(self) -> None:
+        # Path registry persisted to disk
+        self._registry_path = MODULES_OUTPUT_DIR / ".asset_paths.json"
     
-    def _get_asset_path(self, asset_key: str) -> Path:
-        """Resolve the path for a module asset based on its key."""
-        if asset_key.endswith("_sqlite"):
-            module = asset_key.replace("_sqlite", "")
-            sqlite_filename = self.SQLITE_FILENAMES.get(module, f"{module}.sqlite")
-            return MODULES_DIR / f"just_{module}" / sqlite_filename
-        
-        # Handle longevitymap_with_ensembl specifically
-        if asset_key == "longevitymap_with_ensembl":
-            return MODULES_OUTPUT_DIR / "longevitymap" / "longevitymap_ensembl_joined.parquet"
-            
-        # Standard module assets: {module}_{type} (e.g., longevitymap_annotations)
-        parts = asset_key.split("_")
-        if len(parts) >= 2:
-            module = parts[0]
-            type_name = "_".join(parts[1:])
-            return MODULES_OUTPUT_DIR / module / f"{type_name}.parquet"
-            
-        return MODULES_OUTPUT_DIR / asset_key
+    def _load_registry(self) -> dict[str, str]:
+        """Load the asset path registry from disk."""
+        if self._registry_path.exists():
+            import json
+            return json.loads(self._registry_path.read_text())
+        return {}
+    
+    def _save_registry(self, registry: dict[str, str]) -> None:
+        """Save the asset path registry to disk."""
+        import json
+        self._registry_path.parent.mkdir(parents=True, exist_ok=True)
+        self._registry_path.write_text(json.dumps(registry, indent=2))
 
     def handle_output(self, context: OutputContext, obj: Any) -> None:
-        """Log where the asset was stored."""
+        """Store the asset path in registry for later retrieval."""
+        asset_key = context.asset_key.to_user_string()
+        
         if isinstance(obj, Path):
+            # Store the actual path returned by the asset
+            registry = self._load_registry()
+            registry[asset_key] = str(obj)
+            self._save_registry(registry)
             context.log.info(f"Module asset stored at: {obj}")
         else:
             context.log.info(f"Module asset materialized: {type(obj).__name__}")
 
     def load_input(self, context: InputContext) -> Any:
-        """Load asset by returning its expected path."""
+        """Load asset by looking up its stored path."""
         asset_key = context.upstream_output.asset_key.to_user_string() if context.upstream_output else "unknown"
-        path = self._get_asset_path(asset_key)
         
-        if not path.exists():
-            raise FileNotFoundError(
-                f"Module asset not found at {path}. "
-                f"Materialize the {asset_key} asset first."
-            )
-            
-        context.log.info(f"Loading module data from: {path}")
-        return path
+        # Look up the actual path from registry
+        registry = self._load_registry()
+        if asset_key in registry:
+            path = Path(registry[asset_key])
+            if path.exists():
+                context.log.info(f"Loading module data from registry: {path}")
+                return path
+        
+        # Fallback: raise clear error
+        raise FileNotFoundError(
+            f"Module asset '{asset_key}' not found in registry. "
+            f"Materialize the {asset_key} asset first. "
+            f"Registry path: {self._registry_path}"
+        )
 
 
 @io_manager

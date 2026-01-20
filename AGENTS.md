@@ -221,12 +221,23 @@ Datasets are typically uploaded to the `just-dna-seq` organization on Hugging Fa
 - **Delete redundant tests**: If test A (e.g., set equality) fully covers test B (e.g., count check), keep only test A.
 - **Domain constants are OK**: Hardcoding expected enum values or well-known constants from specs is fine; hardcoding row counts or unique counts derived from data inspection is not.
 
+#### Verifying Bug-Catching Claims
+
+When claiming a test "would have caught" a bug, **demonstrate it**:
+
+1. **Isolate the buggy logic** in a test or script
+2. **Run it and show failure** against correct expectations
+3. **Then show the fix passes** the same test
+
+Never claim "tests would have caught this" without running the buggy code against the test.
+
 #### Anti-Patterns to Avoid
 
 - Testing only "happy path" with trivial data
 - Hardcoding expected values that drift from source (use derived ground truth)
 - Mocking data transformations instead of running real pipelines
 - Ignoring edge cases (nulls, empty strings, boundary values, unicode, malformed data)
+- **Claiming tests "would catch bugs" without demonstrating failure on buggy code**
 
 **Meaningless Tests to Avoid** (common AI-generated anti-patterns):
 

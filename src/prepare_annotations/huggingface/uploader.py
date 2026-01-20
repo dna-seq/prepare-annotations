@@ -6,10 +6,12 @@ with intelligent file comparison to avoid unnecessary uploads.
 """
 
 from pathlib import Path
-from typing import Optional, Dict, List
+from typing import Optional, List
 from eliot import start_action
 from huggingface_hub import HfApi, hf_hub_download, list_repo_files, CommitOperationAdd
 from huggingface_hub.utils import RepositoryNotFoundError, HfHubHTTPError
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+import httpx
 
 from prepare_annotations.core.models import SingleUploadResult, BatchUploadResult
 from prepare_annotations.huggingface.dataset_cards import (
@@ -17,6 +19,10 @@ from prepare_annotations.huggingface.dataset_cards import (
     generate_clinvar_card,
     save_dataset_card
 )
+
+# Retry configuration for HuggingFace uploads
+HF_UPLOAD_MAX_RETRIES = 3
+HF_UPLOAD_TIMEOUT_SECONDS = 300  # 5 minutes
 
 
 def upload_to_hf_if_changed(
@@ -336,13 +342,23 @@ def upload_files_batch(
             if commit_message is None:
                 commit_message = f"Upload {num_uploading} parquet file{'s' if num_uploading > 1 else ''}"
             
-            try:
-                commit_info = api.create_commit(
+            # Retry logic for transient network errors
+            @retry(
+                stop=stop_after_attempt(HF_UPLOAD_MAX_RETRIES),
+                wait=wait_exponential(multiplier=1, min=4, max=60),
+                retry=retry_if_exception_type((httpx.TimeoutException, httpx.NetworkError)),
+                reraise=True,
+            )
+            def create_commit_with_retry():
+                return api.create_commit(
                     repo_id=repo_id,
                     repo_type=repo_type,
                     operations=operations,
                     commit_message=commit_message,
                 )
+            
+            try:
+                commit_info = create_commit_with_retry()
                 
                 action.log(
                     message_type="success",
@@ -350,6 +366,14 @@ def upload_files_batch(
                     commit_url=commit_info.commit_url,
                     num_files=num_uploading
                 )
+            except (httpx.TimeoutException, httpx.NetworkError) as e:
+                action.log(
+                    message_type="error",
+                    step="commit_failed_after_retries",
+                    error=str(e),
+                    max_retries=HF_UPLOAD_MAX_RETRIES
+                )
+                raise
             except Exception as e:
                 action.log(
                     message_type="error",
