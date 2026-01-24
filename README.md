@@ -85,7 +85,7 @@ Module conversion produces three standardized parquet files:
 - **State**: `protective`, `risk`, or `neutral`
 - **Genotype**: List of 2 alleles, alphabetically sorted
 
-Converted datasets are uploaded to the [`just-dna-seq`](https://huggingface.co/just-dna-seq) organization on HuggingFace Hub.
+Converted datasets are uploaded to the [`just-dna-seq`](https://huggingface.co/just-dna-seq) organization on HuggingFace Hub. See the [Hugging Face Module Consumption Guide](docs/HF_MODULES_CONSUMPTION.md) for details on how to use these modules in your own pipelines.
 
 ## Package Structure
 

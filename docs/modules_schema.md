@@ -459,4 +459,7 @@ This requires VCF data to compute. Since we always join with VCF, it can be comp
 
 ## Version History
 
-- **v1.0** (2026-01): Initial unified schema design
+## Further Reading
+
+- [Hugging Face Module Consumption Guide](HF_MODULES_CONSUMPTION.md) — How to use these modules from the Hugging Face repository.
+- [Dagster Modules Pipeline](DAGSTER_MODULES_PIPELINE.md) — Implementation details of the conversion pipeline.
