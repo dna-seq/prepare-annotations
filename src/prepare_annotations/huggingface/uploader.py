@@ -223,6 +223,10 @@ def upload_files_batch(
     token: Optional[str] = None,
     commit_message: Optional[str] = None,
     dataset_card_content: Optional[str] = None,
+    metadata_yaml_content: Optional[str] = None,
+    metadata_yaml_path_in_repo: Optional[str] = None,
+    icon_path: Optional[Path] = None,
+    icon_path_in_repo: Optional[str] = None,
 ) -> BatchUploadResult:
     """
     Upload multiple parquet files to HuggingFace in a single atomic commit.
@@ -240,6 +244,10 @@ def upload_files_batch(
         token: Hugging Face API token
         commit_message: Custom commit message
         dataset_card_content: Optional README.md content to upload as dataset card
+        metadata_yaml_content: Optional metadata.yaml content to upload
+        metadata_yaml_path_in_repo: Optional path in repo for metadata.yaml
+        icon_path: Optional local path to an icon file (e.g., .jpg, .png)
+        icon_path_in_repo: Optional path in repo for the icon
         
     Returns:
         BatchUploadResult with upload results for each file
@@ -325,6 +333,40 @@ def upload_files_batch(
                 card_size=len(dataset_card_content)
             )
         
+        tmp_metadata_path = None
+        if metadata_yaml_content is not None and metadata_yaml_path_in_repo is not None:
+            import tempfile
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as tmp:
+                tmp.write(metadata_yaml_content)
+                tmp_metadata_path = tmp.name
+            
+            operations.append(
+                CommitOperationAdd(
+                    path_or_fileobj=tmp_metadata_path,
+                    path_in_repo=metadata_yaml_path_in_repo,
+                )
+            )
+            action.log(
+                message_type="info",
+                step="adding_metadata_yaml",
+                path_in_repo=metadata_yaml_path_in_repo,
+                yaml_size=len(metadata_yaml_content)
+            )
+
+        if icon_path is not None and icon_path_in_repo is not None and icon_path.exists():
+            operations.append(
+                CommitOperationAdd(
+                    path_or_fileobj=str(icon_path),
+                    path_in_repo=icon_path_in_repo,
+                )
+            )
+            action.log(
+                message_type="info",
+                step="adding_icon",
+                path_in_repo=icon_path_in_repo,
+                icon_size=icon_path.stat().st_size
+            )
+        
         if operations:
             num_uploading = len(operations)
             total_size_mb = sum(
@@ -382,10 +424,15 @@ def upload_files_batch(
                 )
                 raise
             finally:
+                import os
                 if tmp_readme_path is not None:
-                    import os
                     try:
                         os.unlink(tmp_readme_path)
+                    except Exception:
+                        pass
+                if tmp_metadata_path is not None:
+                    try:
+                        os.unlink(tmp_metadata_path)
                     except Exception:
                         pass
         else:

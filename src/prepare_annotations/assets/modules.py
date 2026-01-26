@@ -27,6 +27,83 @@ from prepare_annotations.core.paths import (
     MODULES_DIR,
     MODULES_OUTPUT_DIR,
 )
+import yaml
+from prepare_annotations.core.models import ModuleMetadata
+
+# ============================================================================
+# MODULE METADATA MAPPING
+# ============================================================================
+
+MODULE_METADATA_MAP = {
+    "longevitymap": ModuleMetadata(
+        name="Longevitymap postagregator",
+        description="Longevity map postagregator for longevity report.",
+        image_url="/store/remotelogo?module=just_longevitymap&store=ov"
+    ),
+    "lipidmetabolism": ModuleMetadata(
+        name="Lipid metabolism postaggregator",
+        description="Postaggregator for Longevity2reporter. It deppends on annotators dbsnp, longevitymap, clinvar, omim, ncbigene, pubmed, gnomad.",
+        image_url="/store/remotelogo?module=just_lipidmetabolism&store=ov"
+    ),
+    "vo2max": ModuleMetadata(
+        name="VO2max postaggregator",
+        description="Postaggregator for Longevity2reporter. It deppends on annotators dbsnp, longevitymap, clinvar, omim, ncbigene, pubmed, gnomad.",
+        image_url="/store/remotelogo?module=just_vo2max&store=ov"
+    ),
+    "superhuman": ModuleMetadata(
+        name="Superhumangenes postaggregator",
+        description="Postaggregator for superhumangenes reporter. It deppends on annotators dbsnp, longevitymap, clinvar, omim, ncbigene, pubmed, gnomad.",
+        image_url="/store/remotelogo?module=just_superhuman&store=ov"
+    ),
+    "coronary": ModuleMetadata(
+        name="Coronary disease postagregator",
+        description="Coronary disease risks postagregator for longevity report.",
+        image_url="/store/remotelogo?module=just_coronary&store=ov"
+    ),
+    "drugs": ModuleMetadata(
+        name="Longevity drugs postagregator",
+        description="Drugs genetic specific postagregator for longevity report.",
+        image_url="/store/remotelogo?module=just_drugs&store=ov"
+    ),
+    "cancer": ModuleMetadata(
+        name="Cancer postagregator",
+        description="Cancer risks postagregator for longevity report.",
+        image_url="/store/remotelogo?module=just_cancer&store=ov"
+    ),
+    "cardio": ModuleMetadata(
+        name="Cardio postagregator",
+        description="Cardio risks postagregator for longevity report.",
+        image_url="/store/remotelogo?module=just_cardio&store=ov"
+    ),
+    "prs": ModuleMetadata(
+        name="Prs postagregator",
+        description="Pologenic Risk Score (PRS) postagregator for longevity report.",
+        image_url="/store/remotelogo?module=just_prs&store=ov"
+    ),
+    "thrombophilia": ModuleMetadata(
+        name="Thrombophilia risks postaggregator",
+        description="Postaggregator for Longevity2reporter. It deppends on annotators dbsnp, longevitymap, clinvar, omim, ncbigene, pubmed, gnomad.",
+        image_url="/store/remotelogo?module=just_thrombophilia&store=ov"
+    )
+}
+
+
+def _get_module_metadata_yaml(module_name: str) -> Optional[str]:
+    """Get metadata YAML content for a module if available."""
+    metadata = MODULE_METADATA_MAP.get(module_name)
+    if metadata:
+        return yaml.dump(metadata.model_dump(), sort_keys=False)
+    return None
+
+
+def _get_module_icon_path(module_name: str) -> Optional[Path]:
+    """Get the local path to the module icon if available."""
+    icon_path = Path("data/logos") / f"{module_name}.jpg"
+    if icon_path.exists():
+        return icon_path
+    return None
+
+
 from prepare_annotations.core.io import polars_schema_to_table_schema
 from prepare_annotations.core.dagster_configs import (
     EnsemblSourceConfig,
@@ -700,6 +777,12 @@ def longevitymap_hf_upload(
             {"name": "longevitymap", "files": parquet_files}
         ])
         
+        # Generate metadata YAML
+        metadata_yaml = _get_module_metadata_yaml("longevitymap")
+        
+        # Get icon path
+        icon_path = _get_module_icon_path("just_longevitymap")
+        
         result = upload_files_batch(
             parquet_files=parquet_files,
             repo_id=config.repo_id,
@@ -708,6 +791,10 @@ def longevitymap_hf_upload(
             token=config.token,
             commit_message="Update longevitymap module",
             dataset_card_content=dataset_card,
+            metadata_yaml_content=metadata_yaml,
+            metadata_yaml_path_in_repo=f"{config.path_prefix}/longevitymap/metadata.yaml",
+            icon_path=icon_path,
+            icon_path_in_repo=f"{config.path_prefix}/longevitymap/logo.jpg",
         )
         
         action.log(
@@ -1074,6 +1161,12 @@ def lipidmetabolism_hf_upload(
     logger.info(f"Uploading {len(parquet_files)} files to {config.repo_id}")
     
     with start_action(action_type="upload_lipidmetabolism_to_hf", repo_id=config.repo_id):
+        # Generate metadata YAML
+        metadata_yaml = _get_module_metadata_yaml("lipidmetabolism")
+        
+        # Get icon path
+        icon_path = _get_module_icon_path("just_lipidmetabolism")
+
         result = upload_files_batch(
             parquet_files=parquet_files,
             repo_id=config.repo_id,
@@ -1081,6 +1174,10 @@ def lipidmetabolism_hf_upload(
             repo_type="dataset",
             token=config.token,
             commit_message="Update lipidmetabolism module",
+            metadata_yaml_content=metadata_yaml,
+            metadata_yaml_path_in_repo=f"{config.path_prefix}/lipidmetabolism/metadata.yaml",
+            icon_path=icon_path,
+            icon_path_in_repo=f"{config.path_prefix}/lipidmetabolism/logo.jpg",
         )
     
     logger.info(f"Upload complete: {result.num_uploaded} uploaded, {result.num_skipped} skipped")
@@ -1335,6 +1432,12 @@ def vo2max_hf_upload(
     logger.info(f"Uploading {len(parquet_files)} files to {config.repo_id}")
     
     with start_action(action_type="upload_vo2max_to_hf", repo_id=config.repo_id):
+        # Generate metadata YAML
+        metadata_yaml = _get_module_metadata_yaml("vo2max")
+        
+        # Get icon path
+        icon_path = _get_module_icon_path("just_vo2max")
+
         result = upload_files_batch(
             parquet_files=parquet_files,
             repo_id=config.repo_id,
@@ -1342,6 +1445,10 @@ def vo2max_hf_upload(
             repo_type="dataset",
             token=config.token,
             commit_message="Update vo2max module",
+            metadata_yaml_content=metadata_yaml,
+            metadata_yaml_path_in_repo=f"{config.path_prefix}/vo2max/metadata.yaml",
+            icon_path=icon_path,
+            icon_path_in_repo=f"{config.path_prefix}/vo2max/logo.jpg",
         )
     
     logger.info(f"Upload complete: {result.num_uploaded} uploaded, {result.num_skipped} skipped")
@@ -1596,6 +1703,12 @@ def superhuman_hf_upload(
     logger.info(f"Uploading {len(parquet_files)} files to {config.repo_id}")
     
     with start_action(action_type="upload_superhuman_to_hf", repo_id=config.repo_id):
+        # Generate metadata YAML
+        metadata_yaml = _get_module_metadata_yaml("superhuman")
+        
+        # Get icon path
+        icon_path = _get_module_icon_path("just_superhuman")
+
         result = upload_files_batch(
             parquet_files=parquet_files,
             repo_id=config.repo_id,
@@ -1603,6 +1716,10 @@ def superhuman_hf_upload(
             repo_type="dataset",
             token=config.token,
             commit_message="Update superhuman module",
+            metadata_yaml_content=metadata_yaml,
+            metadata_yaml_path_in_repo=f"{config.path_prefix}/superhuman/metadata.yaml",
+            icon_path=icon_path,
+            icon_path_in_repo=f"{config.path_prefix}/superhuman/logo.jpg",
         )
     
     logger.info(f"Upload complete: {result.num_uploaded} uploaded, {result.num_skipped} skipped")
@@ -1857,6 +1974,12 @@ def coronary_hf_upload(
     logger.info(f"Uploading {len(parquet_files)} files to {config.repo_id}")
     
     with start_action(action_type="upload_coronary_to_hf", repo_id=config.repo_id):
+        # Generate metadata YAML
+        metadata_yaml = _get_module_metadata_yaml("coronary")
+        
+        # Get icon path
+        icon_path = _get_module_icon_path("just_coronary")
+
         result = upload_files_batch(
             parquet_files=parquet_files,
             repo_id=config.repo_id,
@@ -1864,6 +1987,10 @@ def coronary_hf_upload(
             repo_type="dataset",
             token=config.token,
             commit_message="Update coronary module",
+            metadata_yaml_content=metadata_yaml,
+            metadata_yaml_path_in_repo=f"{config.path_prefix}/coronary/metadata.yaml",
+            icon_path=icon_path,
+            icon_path_in_repo=f"{config.path_prefix}/coronary/logo.jpg",
         )
     
     logger.info(f"Upload complete: {result.num_uploaded} uploaded, {result.num_skipped} skipped")

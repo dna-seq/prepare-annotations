@@ -91,7 +91,6 @@ def check_required_columns(
 def _weights_checks_core(
     weights_path: Path,
     module_name: str,
-    allow_null_weights: bool = False,
 ) -> AssetCheckResult:
     """
     Core validation for weights.parquet files.
@@ -102,7 +101,14 @@ def _weights_checks_core(
     - Module column matches expected value
     - State values are valid
     - Genotype format is list of 2 alleles
-    - Weight/state consistency (positive=protective, negative=risk)
+    
+    Note: Weight/state consistency is NOT checked because different modules
+    use different semantic systems:
+    - longevitymap, superhuman: protective/risk (health impact)
+    - coronary, lipidmetabolism, vo2max: alt/ref (allele type)
+    
+    The weight sign meaning varies by module and state system, so no
+    universal weight/state consistency rule applies.
     
     All checks use LazyFrame scans to avoid memory bloat.
     """
@@ -181,44 +187,6 @@ def _weights_checks_core(
                 metadata={
                     "warning": "Genotype not alphabetically normalized",
                     "sample_value": str(gt),
-                },
-            )
-    
-    # Check weight/state consistency (if module has numeric weights)
-    if not allow_null_weights:
-        # Positive weights should be protective
-        positive_non_protective = (
-            lf.filter(
-                (pl.col("weight") > 0) & (pl.col("state") != "protective")
-            )
-            .select(pl.len())
-            .collect()
-            .item()
-        )
-        if positive_non_protective > 0:
-            return AssetCheckResult(
-                passed=False,
-                severity=AssetCheckSeverity.WARN,
-                metadata={
-                    "warning": f"Found {positive_non_protective} rows with positive weight but non-protective state",
-                },
-            )
-        
-        # Negative weights should be risk
-        negative_non_risk = (
-            lf.filter(
-                (pl.col("weight") < 0) & (pl.col("state") != "risk")
-            )
-            .select(pl.len())
-            .collect()
-            .item()
-        )
-        if negative_non_risk > 0:
-            return AssetCheckResult(
-                passed=False,
-                severity=AssetCheckSeverity.WARN,
-                metadata={
-                    "warning": f"Found {negative_non_risk} rows with negative weight but non-risk state",
                 },
             )
     
@@ -359,7 +327,6 @@ def check_longevitymap_weights(longevitymap_weights: Path) -> AssetCheckResult:
     return _weights_checks_core(
         weights_path=longevitymap_weights,
         module_name="longevitymap",
-        allow_null_weights=False,
     )
 
 
@@ -413,7 +380,6 @@ def check_lipidmetabolism_weights(lipidmetabolism_weights: Path) -> AssetCheckRe
     return _weights_checks_core(
         weights_path=lipidmetabolism_weights,
         module_name="lipidmetabolism",
-        allow_null_weights=False,
     )
 
 
@@ -455,7 +421,6 @@ def check_vo2max_weights(vo2max_weights: Path) -> AssetCheckResult:
     return _weights_checks_core(
         weights_path=vo2max_weights,
         module_name="vo2max",
-        allow_null_weights=False,
     )
 
 
@@ -501,7 +466,6 @@ def check_superhuman_weights(superhuman_weights: Path) -> AssetCheckResult:
     return _weights_checks_core(
         weights_path=superhuman_weights,
         module_name="superhuman",
-        allow_null_weights=True,  # Superhuman has no numeric weights
     )
 
 
@@ -543,7 +507,6 @@ def check_coronary_weights(coronary_weights: Path) -> AssetCheckResult:
     return _weights_checks_core(
         weights_path=coronary_weights,
         module_name="coronary",
-        allow_null_weights=False,
     )
 
 

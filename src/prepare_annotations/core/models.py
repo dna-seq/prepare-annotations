@@ -37,6 +37,13 @@ class ModuleManifest(BaseModel):
     entrypoint: str = "definitions.py"
 
 
+class ModuleMetadata(BaseModel):
+    """Metadata for a genomic annotation module."""
+    name: str
+    description: str
+    image_url: Optional[str] = None
+
+
 class SplitResult(BaseModel):
     """Result of splitting parquet files by variant type."""
     split_variants_dict: Dict[str, List[Path]]
