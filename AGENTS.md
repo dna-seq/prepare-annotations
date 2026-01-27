@@ -36,6 +36,67 @@ This repository is dedicated to the preparation of genomic annotation data (Ense
 - **DuckDB**: Use for large joins (out-of-core); set `memory_limit` and `temp_directory`
 - **Concurrency**: Use `op_tags={"dagster/concurrency_key": "name"}` to limit parallel execution
 
+#### Resource Tracking (MANDATORY)
+
+**Always track CPU and RAM consumption** for all compute-heavy assets using `resource_tracker`:
+
+```python
+from prepare_annotations.core.runtime import resource_tracker
+
+@asset
+def my_asset(context: AssetExecutionContext) -> Output[Path]:
+    with resource_tracker("my_asset", context=context):
+        # ... compute-heavy code ...
+        pass
+```
+
+**Important:** Always pass `context=context` to enable Dagster UI charts. Without it, metrics only go to Eliot logs.
+
+This automatically logs to Dagster UI:
+- `duration_sec`: Execution time in seconds
+- `cpu_percent`: CPU usage percentage
+- `peak_memory_mb`: Peak RAM usage in MB
+- `memory_delta_mb`: Memory change during execution
+
+These metrics appear in the **Asset Details** page and can be plotted over time for performance monitoring.
+
+#### Run-Level Resource Summaries (MANDATORY)
+
+All jobs must include the `resource_summary_hook` to provide aggregated resource metrics at the run level:
+
+```python
+from prepare_annotations.definitions import resource_summary_hook
+
+my_job = define_asset_job(
+    name="my_job",
+    selection=AssetSelection.assets(...),
+    hooks={resource_summary_hook},  # Note: must be a set, not a list
+)
+```
+
+This hook logs a summary at the end of each successful run:
+- **Total Duration**: Sum of all asset durations
+- **Max Peak Memory**: Highest memory usage (bottleneck identification)
+- **Top memory consumers**: Lists the 3 most memory-intensive assets
+
+This helps users with limited RAM identify potential trouble spots before running pipelines.
+
+#### Dagster Version Notes (1.12.x)
+
+**API differences from newer versions:**
+- `get_dagster_context()` does NOT exist in Dagster 1.12.x - you must pass `context` explicitly to functions that need it
+- `context.log.info()` does NOT accept a `metadata` keyword argument - use `context.add_output_metadata()` separately
+- `EventRecordsFilter` does NOT have `run_ids` parameter - use `instance.all_logs(run_id, of_type=...)` instead
+- For asset materializations, use `EventLogEntry.asset_materialization` (returns `Optional[AssetMaterialization]`), not `DagsterEvent.asset_materialization`
+- `hooks` parameter in `define_asset_job` must be a `set`, not a list: `hooks={my_hook}`
+- Use `defs.resolve_all_asset_specs()` instead of deprecated `defs.get_all_asset_specs()`
+
+**External monitoring integrations** (no built-in CPU/memory middleware):
+- `dagster-prometheus`: Push custom metrics to Prometheus Pushgateway (beta)
+- `dagster-datadog`: Publish metrics to Datadog via DogStatsD (beta)
+
+These allow publishing custom metrics but don't provide automatic system resource tracking. Our `resource_tracker` fills this gap.
+
 #### Dynamic Partitions Pattern
 
 1. Create partition def: `PARTS = DynamicPartitionsDefinition(name="files")`

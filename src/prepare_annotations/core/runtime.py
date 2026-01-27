@@ -31,13 +31,40 @@ def load_env(override: bool = False) -> Optional[str]:
     return None
 
 
+def _log_resource_report_to_dagster(report: ResourceReport, context: Any) -> None:
+    """Log resource report to Dagster context."""
+    from dagster import MetadataValue
+    
+    # Build metadata dict with standard keys for charting
+    metadata = {
+        "duration_sec": MetadataValue.float(round(report.duration, 2)),
+        "cpu_percent": MetadataValue.float(round(report.cpu_usage_percent, 1)),
+        "peak_memory_mb": MetadataValue.float(round(report.peak_memory_mb, 2)),
+        "memory_delta_mb": MetadataValue.float(round(report.memory_delta_mb, 2)),
+    }
+    
+    # Add output metadata to asset materialization (enables charts in UI)
+    if hasattr(context, 'add_output_metadata'):
+        context.add_output_metadata(metadata)
+    
+    # Log to run logs for visibility (Dagster 1.12.x doesn't support metadata param in log.info)
+    context.log.info(
+        f"📊 Resource Report [{report.name}]: Duration: {report.duration:.2f}s, "
+        f"CPU: {report.cpu_usage_percent:.1f}%, Peak RAM: {report.peak_memory_mb:.2f}MB"
+    )
+
+
 @contextmanager
-def resource_tracker(name: str = "resource_usage"):
+def resource_tracker(name: str = "resource_usage", context: Optional[Any] = None):
     """Context manager to track execution time, CPU and peak memory usage.
     
+    Args:
+        name: Name for the resource tracking report
+        context: Dagster AssetExecutionContext (pass this to enable UI charts)
+    
     Automatically logs to:
-    - Dagster: logs resource metrics as asset metadata
-    - Eliot: logs structured resource report
+    - Dagster: logs resource metrics as asset metadata (enables charts in UI)
+    - Eliot: logs structured resource report (when Dagster context not provided)
     """
     process = psutil.Process(os.getpid())
     start_time = time.perf_counter()
@@ -75,45 +102,19 @@ def resource_tracker(name: str = "resource_usage"):
     # Store report in the data dict so calling code can access it
     data["report"] = report
 
-    # Log to Dagster if available (check this first as it's more specific)
-    try:
-        from dagster import get_dagster_logger, MetadataValue
-        # This will fail if not in a dagster context
-        logger = get_dagster_logger()
-        logger.info(
-            f"📊 Resource Report [{name}]: Duration: {report.duration:.2f}s, "
-            f"CPU: {report.cpu_usage_percent:.1f}%, Peak RAM: {report.peak_memory_mb:.2f}MB"
-        )
-        
-        # Try to add metadata to the current op run
-        try:
-            from dagster import get_dagster_context
-            context = get_dagster_context()
-            
-            # Clean name for metadata key
-            clean_key = re.sub(r'[^a-z0-9]+', '_', name.lower()).strip('_')
-            if not clean_key:
-                clean_key = "resource_usage"
-            
-            # Log metadata directly to the current op
-            context.log.info(
-                "resource_metrics",
-                metadata={
-                    f"{clean_key}_duration_sec": MetadataValue.float(round(report.duration, 2)),
-                    f"{clean_key}_cpu_percent": MetadataValue.float(round(report.cpu_usage_percent, 1)),
-                    f"{clean_key}_peak_memory_mb": MetadataValue.float(round(report.peak_memory_mb, 2)),
-                    f"{clean_key}_memory_delta_mb": MetadataValue.float(round(report.memory_delta_mb, 2)),
-                }
-            )
-        except Exception:
-            # Context not available or metadata logging failed
+    # Log to Dagster if context provided, otherwise use Eliot
+    if context is not None:
+        _log_resource_report_to_dagster(report, context)
+    else:
+        with start_action(
+            action_type="resource_report",
+            name=report.name,
+            duration_sec=round(report.duration, 2),
+            cpu_percent=round(report.cpu_usage_percent, 1),
+            peak_memory_mb=round(report.peak_memory_mb, 2),
+            memory_delta_mb=round(report.memory_delta_mb, 2),
+        ):
             pass
-            
-    except ImportError:
-        pass
-    except Exception:
-        # Not in a Dagster context
-        pass
 
 
 def resolve_worker_counts(

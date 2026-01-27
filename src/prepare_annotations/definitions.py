@@ -22,7 +22,13 @@ import os
 
 import warnings
 
-from dagster import Definitions, define_asset_job, AssetSelection
+from dagster import (
+    Definitions,
+    define_asset_job,
+    AssetSelection,
+    success_hook,
+    HookContext,
+)
 
 # Suppress dagster-polars internal warning about "extension" field shadowing
 # This is a known issue in dagster-polars, not our code
@@ -84,6 +90,89 @@ from prepare_annotations.core.dagster_io_managers import (
 )
 
 
+@success_hook
+def resource_summary_hook(context: HookContext) -> None:
+    """
+    Success hook that logs aggregated resource metrics for the entire run.
+    
+    This provides run-level visibility into:
+    - Total duration across all assets
+    - Maximum peak memory (bottleneck identification)
+    - Average CPU usage
+    
+    Appears in the run logs at the end of successful runs.
+    """
+    # Get all events from this run
+    run_id = context.run_id
+    instance = context.instance
+    
+    # Query materialization events for this run (Dagster 1.12.x compatible)
+    from dagster import DagsterEventType
+    
+    # Use all_logs instead of get_event_records (EventRecordsFilter doesn't have run_ids in 1.12.x)
+    log_entries = instance.all_logs(run_id, of_type=DagsterEventType.ASSET_MATERIALIZATION)
+    
+    # Extract resource metrics from asset materializations
+    total_duration = 0.0
+    max_peak_memory = 0.0
+    total_cpu = 0.0
+    asset_count = 0
+    asset_metrics: list[dict] = []
+    
+    for entry in log_entries:
+        # EventLogEntry.asset_materialization returns Optional[AssetMaterialization] directly
+        mat = entry.asset_materialization
+        if mat is not None:
+            metadata = mat.metadata or {}
+            
+            duration = metadata.get("duration_sec")
+            peak_mem = metadata.get("peak_memory_mb")
+            cpu = metadata.get("cpu_percent")
+            
+            if duration is not None or peak_mem is not None:
+                asset_name = mat.asset_key.to_user_string()
+                asset_info = {"asset": asset_name}
+                
+                if duration is not None:
+                    dur_val = duration.value if hasattr(duration, 'value') else float(duration)
+                    total_duration += dur_val
+                    asset_info["duration_sec"] = dur_val
+                
+                if peak_mem is not None:
+                    mem_val = peak_mem.value if hasattr(peak_mem, 'value') else float(peak_mem)
+                    max_peak_memory = max(max_peak_memory, mem_val)
+                    asset_info["peak_memory_mb"] = mem_val
+                
+                if cpu is not None:
+                    cpu_val = cpu.value if hasattr(cpu, 'value') else float(cpu)
+                    total_cpu += cpu_val
+                    asset_info["cpu_percent"] = cpu_val
+                
+                asset_metrics.append(asset_info)
+                asset_count += 1
+    
+    if asset_count == 0:
+        context.log.info("No resource metrics found in this run")
+        return
+    
+    avg_cpu = total_cpu / asset_count if asset_count > 0 else 0.0
+    
+    # Sort by peak memory to identify bottlenecks
+    sorted_by_memory = sorted(asset_metrics, key=lambda x: x.get("peak_memory_mb", 0), reverse=True)
+    top_memory_assets = sorted_by_memory[:3]
+    
+    # Log summary
+    context.log.info(
+        f"📊 RUN RESOURCE SUMMARY\n"
+        f"  Total Duration: {total_duration:.1f}s ({total_duration/60:.1f} min)\n"
+        f"  Max Peak Memory: {max_peak_memory:.1f} MB\n"
+        f"  Average CPU: {avg_cpu:.1f}%\n"
+        f"  Assets with metrics: {asset_count}\n"
+        f"  Top memory consumers:\n" +
+        "\n".join(f"    - {a['asset']}: {a.get('peak_memory_mb', 0):.1f} MB" for a in top_memory_assets)
+    )
+
+
 def get_download_concurrency_limit() -> int:
     """Get max concurrent VCF downloads from env or default."""
     env_value = os.getenv("PREPARE_ANNOTATIONS_DOWNLOAD_WORKERS")
@@ -105,6 +194,9 @@ def get_parquet_concurrency_limit() -> int:
 # Short names for easy CLI usage: prepare, download, convert, upload, full
 # ============================================================================
 
+# Common hooks for all jobs
+_job_hooks = {resource_summary_hook}
+
 # Default job: discover -> download -> convert (per-file partitioned)
 prepare_job = define_asset_job(
     name="prepare",
@@ -114,6 +206,7 @@ prepare_job = define_asset_job(
         ensembl_vcf_file,
         ensembl_parquet_file,
     ),
+    hooks=_job_hooks,
 )
 
 # Job to just download VCF files (partitioned with retries)
@@ -124,6 +217,7 @@ download_job = define_asset_job(
         ensembl_vcf_urls,
         ensembl_vcf_file,
     ),
+    hooks=_job_hooks,
 )
 
 # Job to convert only (assumes VCF files already downloaded)
@@ -133,6 +227,7 @@ convert_job = define_asset_job(
     selection=AssetSelection.assets(
         ensembl_parquet_file,
     ),
+    hooks=_job_hooks,
 )
 
 # Job to collect and upload to HuggingFace Hub
@@ -143,6 +238,7 @@ upload_job = define_asset_job(
         ensembl_all_parquet_files,
         ensembl_hf_upload,
     ),
+    hooks=_job_hooks,
 )
 
 # Full pipeline: discover → download → convert → collect → upload
@@ -156,6 +252,7 @@ full_job = define_asset_job(
         ensembl_all_parquet_files,
         ensembl_hf_upload,
     ),
+    hooks=_job_hooks,
 )
 
 
@@ -191,6 +288,7 @@ longevitymap_convert_job = define_asset_job(
         longevitymap_studies,
         longevitymap_weights,
     ) | AssetSelection.checks_for_assets(*_longevitymap_output_assets),
+    hooks=_job_hooks,
 )
 
 # Full job: convert + join with Ensembl (no upload)
@@ -205,6 +303,7 @@ longevitymap_full_job = define_asset_job(
         longevitymap_weights,
         longevitymap_with_ensembl,
     ) | AssetSelection.checks_for_assets(*_longevitymap_output_assets),
+    hooks=_job_hooks,
 )
 
 # Default job: full pipeline with upload to HuggingFace
@@ -220,6 +319,7 @@ longevitymap_job = define_asset_job(
         longevitymap_with_ensembl,
         longevitymap_hf_upload,
     ) | AssetSelection.checks_for_assets(*_longevitymap_output_assets),
+    hooks=_job_hooks,
 )
 
 
@@ -236,6 +336,7 @@ lipidmetabolism_convert_job = define_asset_job(
         lipidmetabolism_studies,
         lipidmetabolism_weights,
     ) | AssetSelection.checks_for_assets(*_lipidmetabolism_output_assets),
+    hooks=_job_hooks,
 )
 
 lipidmetabolism_full_job = define_asset_job(
@@ -249,6 +350,7 @@ lipidmetabolism_full_job = define_asset_job(
         lipidmetabolism_weights,
         lipidmetabolism_with_ensembl,
     ) | AssetSelection.checks_for_assets(*_lipidmetabolism_output_assets),
+    hooks=_job_hooks,
 )
 
 lipidmetabolism_job = define_asset_job(
@@ -263,6 +365,7 @@ lipidmetabolism_job = define_asset_job(
         lipidmetabolism_with_ensembl,
         lipidmetabolism_hf_upload,
     ) | AssetSelection.checks_for_assets(*_lipidmetabolism_output_assets),
+    hooks=_job_hooks,
 )
 
 
@@ -279,6 +382,7 @@ vo2max_convert_job = define_asset_job(
         vo2max_studies,
         vo2max_weights,
     ) | AssetSelection.checks_for_assets(*_vo2max_output_assets),
+    hooks=_job_hooks,
 )
 
 vo2max_full_job = define_asset_job(
@@ -292,6 +396,7 @@ vo2max_full_job = define_asset_job(
         vo2max_weights,
         vo2max_with_ensembl,
     ) | AssetSelection.checks_for_assets(*_vo2max_output_assets),
+    hooks=_job_hooks,
 )
 
 vo2max_job = define_asset_job(
@@ -306,6 +411,7 @@ vo2max_job = define_asset_job(
         vo2max_with_ensembl,
         vo2max_hf_upload,
     ) | AssetSelection.checks_for_assets(*_vo2max_output_assets),
+    hooks=_job_hooks,
 )
 
 
@@ -322,6 +428,7 @@ superhuman_convert_job = define_asset_job(
         superhuman_studies,
         superhuman_weights,
     ) | AssetSelection.checks_for_assets(*_superhuman_output_assets),
+    hooks=_job_hooks,
 )
 
 superhuman_full_job = define_asset_job(
@@ -335,6 +442,7 @@ superhuman_full_job = define_asset_job(
         superhuman_weights,
         superhuman_with_ensembl,
     ) | AssetSelection.checks_for_assets(*_superhuman_output_assets),
+    hooks=_job_hooks,
 )
 
 superhuman_job = define_asset_job(
@@ -349,6 +457,7 @@ superhuman_job = define_asset_job(
         superhuman_with_ensembl,
         superhuman_hf_upload,
     ) | AssetSelection.checks_for_assets(*_superhuman_output_assets),
+    hooks=_job_hooks,
 )
 
 
@@ -365,6 +474,7 @@ coronary_convert_job = define_asset_job(
         coronary_studies,
         coronary_weights,
     ) | AssetSelection.checks_for_assets(*_coronary_output_assets),
+    hooks=_job_hooks,
 )
 
 coronary_full_job = define_asset_job(
@@ -378,6 +488,7 @@ coronary_full_job = define_asset_job(
         coronary_weights,
         coronary_with_ensembl,
     ) | AssetSelection.checks_for_assets(*_coronary_output_assets),
+    hooks=_job_hooks,
 )
 
 coronary_job = define_asset_job(
@@ -392,6 +503,7 @@ coronary_job = define_asset_job(
         coronary_with_ensembl,
         coronary_hf_upload,
     ) | AssetSelection.checks_for_assets(*_coronary_output_assets),
+    hooks=_job_hooks,
 )
 
 
@@ -438,6 +550,7 @@ all_modules_convert_job = define_asset_job(
         coronary_studies,
         coronary_weights,
     ) | AssetSelection.checks_for_assets(*_all_module_output_assets),
+    hooks=_job_hooks,
 )
 
 all_modules_full_job = define_asset_job(
@@ -476,6 +589,7 @@ all_modules_full_job = define_asset_job(
         coronary_weights,
         coronary_with_ensembl,
     ) | AssetSelection.checks_for_assets(*_all_module_output_assets),
+    hooks=_job_hooks,
 )
 
 all_modules_job = define_asset_job(
@@ -519,6 +633,7 @@ all_modules_job = define_asset_job(
         coronary_with_ensembl,
         coronary_hf_upload,
     ) | AssetSelection.checks_for_assets(*_all_module_output_assets),
+    hooks=_job_hooks,
 )
 
 

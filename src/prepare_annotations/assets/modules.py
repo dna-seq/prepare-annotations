@@ -22,6 +22,7 @@ from dagster import (
 )
 from eliot import start_action
 
+from prepare_annotations.core.runtime import resource_tracker
 from prepare_annotations.core.paths import (
     get_default_ensembl_cache_dir,
     MODULES_DIR,
@@ -456,22 +457,23 @@ def longevitymap_weights(
     
     logger.info(f"Converting weights from {longevitymap_sqlite} with Ensembl genotype resolution")
     
-    with start_action(
-        action_type="convert_longevitymap_weights_with_ensembl",
-        db_path=str(longevitymap_sqlite),
-    ) as action:
-        # Use the common conversion function with Ensembl
-        weights = convert_module_weights_with_ensembl(
-            db_path=longevitymap_sqlite,
-            ensembl_source=ensembl_variations_source,
-            module_name=config.module_name,
-            curator=config.curator,
-            method=config.method,
-        )
-        
-        # Collect and write
-        weights.sink_parquet(output_path, engine="streaming")
-        action.log(message_type="info", step="weights_written", path=str(output_path))
+    with resource_tracker("longevitymap_weights", context=context):
+        with start_action(
+            action_type="convert_longevitymap_weights_with_ensembl",
+            db_path=str(longevitymap_sqlite),
+        ) as action:
+            # Use the common conversion function with Ensembl
+            weights = convert_module_weights_with_ensembl(
+                db_path=longevitymap_sqlite,
+                ensembl_source=ensembl_variations_source,
+                module_name=config.module_name,
+                curator=config.curator,
+                method=config.method,
+            )
+            
+            # Collect and write
+            weights.sink_parquet(output_path, engine="streaming")
+            action.log(message_type="info", step="weights_written", path=str(output_path))
     
     # Get stats (keep lightweight to avoid high memory usage)
     stats = pl.scan_parquet(output_path).select([
@@ -532,20 +534,21 @@ def longevitymap_with_ensembl(
     
     logger.info("Joining LongevityMap weights with Ensembl variations")
     
-    with start_action(action_type="join_longevitymap_ensembl") as action:
-        ensembl_files = resolve_ensembl_parquet_files_from_source(ensembl_variations_source)
-        row_count = join_weights_with_ensembl_duckdb(
-            weights_path=Path(longevitymap_weights),
-            ensembl_files=ensembl_files,
-            output_path=output_path,
-            duckdb_config=DuckDBConfig(),
-        )
-        action.log(
-            message_type="info",
-            step="joined_written",
-            path=str(output_path),
-            row_count=row_count,
-        )
+    with resource_tracker("longevitymap_with_ensembl", context=context):
+        with start_action(action_type="join_longevitymap_ensembl") as action:
+            ensembl_files = resolve_ensembl_parquet_files_from_source(ensembl_variations_source)
+            row_count = join_weights_with_ensembl_duckdb(
+                weights_path=Path(longevitymap_weights),
+                ensembl_files=ensembl_files,
+                output_path=output_path,
+                duckdb_config=DuckDBConfig(),
+            )
+            action.log(
+                message_type="info",
+                step="joined_written",
+                path=str(output_path),
+                row_count=row_count,
+            )
     
     # Get stats
     row_count = pl.scan_parquet(output_path).select(pl.len()).collect().item()
@@ -590,6 +593,13 @@ def join_weights_with_ensembl_duckdb(
     con.execute("SET preserve_insertion_order = false")
 
     if any(p.startswith(("http://", "https://")) for p in ensembl_files):
+        # Avoid relying on ~/.duckdb (can be missing/unwritable on some systems).
+        from prepare_annotations.core.paths import get_default_cache_dir
+
+        ext_dir = get_default_cache_dir("duckdb") / "extensions"
+        ext_dir.mkdir(parents=True, exist_ok=True)
+        con.execute(f"SET extension_directory = '{_duckdb_quote_path(str(ext_dir))}'")
+        con.execute("INSTALL httpfs")
         con.execute("LOAD httpfs")
 
     con.execute(
@@ -1074,13 +1084,14 @@ def lipidmetabolism_weights(
     
     logger.info(f"Converting weights from {lipidmetabolism_sqlite}")
     
-    with start_action(action_type="convert_lipidmetabolism_weights"):
-        weights = convert_lipidmetabolism_weights(
-            lipidmetabolism_sqlite,
-            curator=config.curator,
-            method=config.method,
-        )
-        weights.sink_parquet(output_path, engine="streaming")
+    with resource_tracker("lipidmetabolism_weights", context=context):
+        with start_action(action_type="convert_lipidmetabolism_weights"):
+            weights = convert_lipidmetabolism_weights(
+                lipidmetabolism_sqlite,
+                curator=config.curator,
+                method=config.method,
+            )
+            weights.sink_parquet(output_path, engine="streaming")
     
     row_count = pl.scan_parquet(output_path).select(pl.len()).collect().item()
     logger.info(f"Wrote {row_count} weights to {output_path}")
@@ -1345,13 +1356,14 @@ def vo2max_weights(
     
     logger.info(f"Converting weights from {vo2max_sqlite}")
     
-    with start_action(action_type="convert_vo2max_weights"):
-        weights = convert_vo2max_weights(
-            vo2max_sqlite,
-            curator=config.curator,
-            method=config.method,
-        )
-        weights.sink_parquet(output_path, engine="streaming")
+    with resource_tracker("vo2max_weights", context=context):
+        with start_action(action_type="convert_vo2max_weights"):
+            weights = convert_vo2max_weights(
+                vo2max_sqlite,
+                curator=config.curator,
+                method=config.method,
+            )
+            weights.sink_parquet(output_path, engine="streaming")
     
     row_count = pl.scan_parquet(output_path).select(pl.len()).collect().item()
     logger.info(f"Wrote {row_count} weights to {output_path}")
@@ -1616,13 +1628,14 @@ def superhuman_weights(
     
     logger.info(f"Converting weights from {superhuman_sqlite}")
     
-    with start_action(action_type="convert_superhuman_weights"):
-        weights = convert_superhuman_weights(
-            superhuman_sqlite,
-            curator=config.curator,
-            method=config.method,
-        )
-        weights.sink_parquet(output_path, engine="streaming")
+    with resource_tracker("superhuman_weights", context=context):
+        with start_action(action_type="convert_superhuman_weights"):
+            weights = convert_superhuman_weights(
+                superhuman_sqlite,
+                curator=config.curator,
+                method=config.method,
+            )
+            weights.sink_parquet(output_path, engine="streaming")
     
     row_count = pl.scan_parquet(output_path).select(pl.len()).collect().item()
     logger.info(f"Wrote {row_count} weights to {output_path}")
@@ -1887,13 +1900,14 @@ def coronary_weights(
     
     logger.info(f"Converting weights from {coronary_sqlite}")
     
-    with start_action(action_type="convert_coronary_weights"):
-        weights = convert_coronary_weights(
-            coronary_sqlite,
-            curator=config.curator,
-            method=config.method,
-        )
-        weights.sink_parquet(output_path, engine="streaming")
+    with resource_tracker("coronary_weights", context=context):
+        with start_action(action_type="convert_coronary_weights"):
+            weights = convert_coronary_weights(
+                coronary_sqlite,
+                curator=config.curator,
+                method=config.method,
+            )
+            weights.sink_parquet(output_path, engine="streaming")
     
     row_count = pl.scan_parquet(output_path).select(pl.len()).collect().item()
     logger.info(f"Wrote {row_count} weights to {output_path}")

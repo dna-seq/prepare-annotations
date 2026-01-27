@@ -53,7 +53,11 @@ app = typer.Typer(
     name="prepare-annotations",
     help="Modern Genomic Data Pipeline Tool (using Pipelines class)",
     rich_markup_mode="rich",
-    no_args_is_help=True
+    no_args_is_help=True,
+    # Rich pretty-tracebacks can hang when traversing large/complex locals (e.g. Dagster contexts,
+    # Polars objects). Disable locals rendering to keep failures actionable and fast.
+    pretty_exceptions_show_locals=False,
+    pretty_exceptions_short=True,
 )
 
 # Minimal Dagster-only CLI (used by `uv run prepare`)
@@ -62,6 +66,9 @@ dagster_app = typer.Typer(
     help="Dagster pipelines and UI for prepare-annotations",
     rich_markup_mode="rich",
     no_args_is_help=True,
+    # `uv run prepare ...` failures should never hang in Rich pretty-printing.
+    pretty_exceptions_show_locals=False,
+    pretty_exceptions_short=True,
 )
 
 console = Console()

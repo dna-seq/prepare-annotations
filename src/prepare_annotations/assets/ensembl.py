@@ -228,25 +228,26 @@ def ensembl_vcf_file(
 
     logger.info(f"Downloading {partition_filename} from {url}")
 
-    with start_action(action_type="dagster_download_vcf", url=url, filename=partition_filename) as action:
-        local_path = download_path(
-            url=url,
-            name="ensembl",
-            dest_dir=vcf_dir,
-            check_files=True,
-            http_max_pool=config.http_max_pool,
-            connect_timeout=config.connect_timeout,
-            sock_read_timeout=config.sock_read_timeout,
-            retries=config.retries,
-            expected_checksum=checksums.get(partition_filename),
-        )
-        file_size = local_path.stat().st_size
-        action.log(
-            message_type="info",
-            step="downloaded",
-            path=str(local_path),
-            size_mb=round(file_size / (1024 * 1024), 2),
-        )
+    with resource_tracker("ensembl_vcf_download", context=context):
+        with start_action(action_type="dagster_download_vcf", url=url, filename=partition_filename) as action:
+            local_path = download_path(
+                url=url,
+                name="ensembl",
+                dest_dir=vcf_dir,
+                check_files=True,
+                http_max_pool=config.http_max_pool,
+                connect_timeout=config.connect_timeout,
+                sock_read_timeout=config.sock_read_timeout,
+                retries=config.retries,
+                expected_checksum=checksums.get(partition_filename),
+            )
+            file_size = local_path.stat().st_size
+            action.log(
+                message_type="info",
+                step="downloaded",
+                path=str(local_path),
+                size_mb=round(file_size / (1024 * 1024), 2),
+            )
 
     logger.info(f"Downloaded {partition_filename}: {file_size / (1024*1024):.1f} MB")
 
@@ -324,19 +325,20 @@ def ensembl_parquet_file(
                     },
                 )
 
-        # Convert to parquet
-        lazy_frame, result_path = vcf_to_parquet(
-            vcf_path=vcf_path,
-            parquet_path=parquet_path,
-            overwrite=config.force_convert,
-            compression=config.compression,
-            compression_level=config.compression_level,
-            alts_list=config.alts_list,
-            thread_num=config.get_threads(),
-        )
-        _ = lazy_frame  # LazyFrame is not used further
-        file_size = result_path.stat().st_size
-        action.log(message_type="info", step="converted", path=str(result_path), size_mb=round(file_size / (1024*1024), 2))
+        # Convert to parquet with resource tracking
+        with resource_tracker("ensembl_parquet_conversion", context=context):
+            lazy_frame, result_path = vcf_to_parquet(
+                vcf_path=vcf_path,
+                parquet_path=parquet_path,
+                overwrite=config.force_convert,
+                compression=config.compression,
+                compression_level=config.compression_level,
+                alts_list=config.alts_list,
+                thread_num=config.get_threads(),
+            )
+            _ = lazy_frame  # LazyFrame is not used further
+            file_size = result_path.stat().st_size
+            action.log(message_type="info", step="converted", path=str(result_path), size_mb=round(file_size / (1024*1024), 2))
 
     logger.info(f"Converted {vcf_path.name} -> {result_path.name}: {file_size / (1024*1024):.1f} MB")
 

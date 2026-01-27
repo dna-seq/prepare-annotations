@@ -483,6 +483,13 @@ def convert_module_weights_with_ensembl(
     
     # Load httpfs if we have remote files
     if any(p.startswith(("http://", "https://")) for p in ensembl_files):
+        # Avoid relying on ~/.duckdb (can be missing/unwritable on some systems).
+        from prepare_annotations.core.paths import get_default_cache_dir
+
+        ext_dir = get_default_cache_dir("duckdb") / "extensions"
+        ext_dir.mkdir(parents=True, exist_ok=True)
+        con.execute(f"SET extension_directory = '{str(ext_dir).replace(chr(39), chr(39)+chr(39))}'")
+        con.execute("INSTALL httpfs")
         con.execute("LOAD httpfs")
     
     # Single SQL query handles everything:
