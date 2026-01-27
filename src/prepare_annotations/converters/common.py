@@ -11,9 +11,76 @@ All operations are lazy (LazyFrame) for memory efficiency on laptops.
 from __future__ import annotations
 
 import sqlite3
+import time
 from pathlib import Path
+from typing import Optional
 
 import polars as pl
+from eliot import log_message
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+
+
+def check_huggingface_auth() -> Optional[dict]:
+    """
+    Check HuggingFace authentication status programmatically and log the result.
+    
+    Returns:
+        Dictionary with user info if authenticated, None otherwise
+    """
+    try:
+        from huggingface_hub import HfApi, whoami
+        
+        api = HfApi()
+        user_info = whoami()
+        
+        log_message(
+            message_type="huggingface_auth_check",
+            username=user_info.get("name", "unknown"),
+            orgs=user_info.get("orgs", []),
+            authenticated=True
+        )
+        
+        return user_info
+    except Exception as e:
+        log_message(
+            message_type="huggingface_auth_check",
+            authenticated=False,
+            error=str(e)
+        )
+        return None
+
+
+def configure_duckdb_for_hf(con, memory_limit: str = "4GB", temp_directory: Path = Path("data/interim/duckdb"), max_connections: int = 2) -> None:
+    """
+    Configure DuckDB connection with rate-limiting for HuggingFace HTTP requests.
+    
+    Args:
+        con: DuckDB connection
+        memory_limit: Memory limit string (e.g., '4GB')
+        temp_directory: Temporary directory for DuckDB
+        max_connections: Maximum number of simultaneous HTTP connections (default: 2)
+    """
+    # Basic configuration
+    con.execute(f"SET memory_limit = '{memory_limit}'")
+    Path(temp_directory).mkdir(parents=True, exist_ok=True)
+    con.execute(f"SET temp_directory = '{str(temp_directory).replace(chr(39), chr(39)+chr(39))}'")
+    con.execute("SET preserve_insertion_order = false")
+    
+    # Limit parallelism to avoid HTTP 429 from HuggingFace
+    # These settings control how many concurrent HTTP requests DuckDB makes
+    con.execute(f"SET threads = {max_connections}")  # Limit worker threads (controls HTTP parallelism)
+    con.execute(f"SET http_timeout = 180000")  # 180 second timeout (3 minutes)
+    con.execute(f"SET http_retries = 5")  # More retries for DuckDB's internal retry logic
+    con.execute(f"SET http_retry_wait_ms = 5000")  # Wait 5 seconds between DuckDB's internal retries
+    
+    log_message(
+        message_type="duckdb_config",
+        memory_limit=memory_limit,
+        temp_directory=str(temp_directory),
+        max_connections=max_connections,
+        threads=max_connections,
+        note="Aggressive rate limiting to avoid HuggingFace HTTP 429"
+    )
 
 
 def load_weights_raw(db_path: Path) -> pl.LazyFrame:
@@ -451,6 +518,23 @@ def convert_module_weights_with_ensembl(
     import duckdb
     import tempfile
     
+    # Check HuggingFace authentication and log status
+    user_info = check_huggingface_auth()
+    if user_info:
+        log_message(
+            message_type="ensembl_conversion_start",
+            module=module_name,
+            hf_user=user_info.get("name", "unknown"),
+            hf_orgs=user_info.get("orgs", [])
+        )
+    else:
+        log_message(
+            message_type="ensembl_conversion_start",
+            module=module_name,
+            hf_authenticated=False,
+            warning="Running without HuggingFace authentication - may encounter rate limits"
+        )
+    
     # Resolve Ensembl parquet files
     if isinstance(ensembl_source, pl.LazyFrame):
         # Materialize LazyFrame to temp parquet for DuckDB
@@ -476,10 +560,9 @@ def convert_module_weights_with_ensembl(
     method_sql = method.replace("'", "''")
     
     con = duckdb.connect()
-    con.execute(f"SET memory_limit = '{memory_limit}'")
-    Path(temp_directory).mkdir(parents=True, exist_ok=True)
-    con.execute(f"SET temp_directory = '{temp_directory.replace(chr(39), chr(39)+chr(39))}'")
-    con.execute("SET preserve_insertion_order = false")
+    
+    # Configure DuckDB with rate limiting for HuggingFace (use 2 connections to avoid rate limiting)
+    configure_duckdb_for_hf(con, memory_limit=memory_limit, temp_directory=Path(temp_directory), max_connections=2)
     
     # Load httpfs if we have remote files
     if any(p.startswith(("http://", "https://")) for p in ensembl_files):
@@ -630,8 +713,50 @@ def convert_module_weights_with_ensembl(
     FROM deduplicated
     """
     
-    result_df = con.execute(query).pl()
-    con.close()
+    # Execute query with retry logic for HTTP 429 errors
+    # Use longer wait times: 10s, 20s, 40s, 80s, 160s (capped at 120s)
+    @retry(
+        retry=retry_if_exception_type(Exception),
+        stop=stop_after_attempt(6),
+        wait=wait_exponential(multiplier=5, min=10, max=120),
+        reraise=True
+    )
+    def execute_with_retry():
+        """Execute DuckDB query with retry logic for rate limiting."""
+        try:
+            result = con.execute(query).pl()
+            log_message(
+                message_type="duckdb_query_success",
+                module=module_name,
+                num_files=len(ensembl_files)
+            )
+            return result
+        except Exception as e:
+            error_msg = str(e)
+            # Check if this is an HTTP 429 error that should be retried
+            if "HTTP 429" in error_msg or "Too Many Requests" in error_msg or "HTTPException" in str(type(e)):
+                log_message(
+                    message_type="duckdb_http_429_retry",
+                    module=module_name,
+                    error=error_msg,
+                    error_type=str(type(e)),
+                    retry_wait="exponential backoff (10s -> 120s)"
+                )
+                raise  # Trigger retry
+            else:
+                # For non-429 errors, log and re-raise without retry
+                log_message(
+                    message_type="duckdb_query_error",
+                    module=module_name,
+                    error=error_msg,
+                    error_type=str(type(e))
+                )
+                raise
+    
+    try:
+        result_df = execute_with_retry()
+    finally:
+        con.close()
     
     return result_df.lazy()
 

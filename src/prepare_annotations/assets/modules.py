@@ -20,13 +20,18 @@ from dagster import (
     Output,
     MetadataValue,
 )
-from eliot import start_action
+from eliot import start_action, log_message
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 from prepare_annotations.core.runtime import resource_tracker
 from prepare_annotations.core.paths import (
     get_default_ensembl_cache_dir,
     MODULES_DIR,
     MODULES_OUTPUT_DIR,
+)
+from prepare_annotations.converters.common import (
+    check_huggingface_auth,
+    configure_duckdb_for_hf,
 )
 import yaml
 from prepare_annotations.core.models import ModuleMetadata
@@ -580,6 +585,9 @@ def join_weights_with_ensembl_duckdb(
     if not ensembl_files:
         raise FileNotFoundError("No Ensembl parquet files provided for join")
 
+    # Check HuggingFace authentication
+    check_huggingface_auth()
+
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     weights_sql = _duckdb_quote_path(str(weights_path))
@@ -587,10 +595,14 @@ def join_weights_with_ensembl_duckdb(
     ensembl_list_sql = "[" + ", ".join(f"'{_duckdb_quote_path(p)}'" for p in ensembl_files) + "]"
 
     con = duckdb.connect()
-    con.execute(f"SET memory_limit = '{duckdb_config.get_memory_limit()}'")
-    Path(duckdb_config.temp_directory).mkdir(parents=True, exist_ok=True)
-    con.execute(f"SET temp_directory = '{_duckdb_quote_path(duckdb_config.temp_directory)}'")
-    con.execute("SET preserve_insertion_order = false")
+    
+    # Configure DuckDB with rate limiting for HuggingFace (use 2 connections to avoid rate limiting)
+    configure_duckdb_for_hf(
+        con, 
+        memory_limit=duckdb_config.get_memory_limit(), 
+        temp_directory=Path(duckdb_config.temp_directory), 
+        max_connections=2
+    )
 
     if any(p.startswith(("http://", "https://")) for p in ensembl_files):
         # Avoid relying on ~/.duckdb (can be missing/unwritable on some systems).
@@ -602,8 +614,7 @@ def join_weights_with_ensembl_duckdb(
         con.execute("INSTALL httpfs")
         con.execute("LOAD httpfs")
 
-    con.execute(
-        f"""
+    query = f"""
         COPY (
             WITH weights AS (
                 SELECT * FROM read_parquet('{weights_sql}')
@@ -701,10 +712,49 @@ def join_weights_with_ensembl_duckdb(
             COMPRESSION_LEVEL 14
         )
         """
+    
+    # Execute query with retry logic for HTTP 429 errors
+    # Use longer wait times: 10s, 20s, 40s, 80s, 160s (capped at 120s)
+    @retry(
+        retry=retry_if_exception_type(Exception),
+        stop=stop_after_attempt(6),
+        wait=wait_exponential(multiplier=5, min=10, max=120),
+        reraise=True
     )
-
-    row_count = con.execute(f"SELECT count(*) FROM read_parquet('{output_sql}')").fetchone()[0]
-    con.close()
+    def execute_with_retry():
+        """Execute DuckDB query with retry logic for rate limiting."""
+        try:
+            con.execute(query)
+            log_message(
+                message_type="duckdb_join_success",
+                num_files=len(ensembl_files)
+            )
+        except Exception as e:
+            error_msg = str(e)
+            # Check if this is an HTTP 429 error that should be retried
+            if "HTTP 429" in error_msg or "Too Many Requests" in error_msg or "HTTPException" in str(type(e)):
+                log_message(
+                    message_type="duckdb_http_429_retry",
+                    error=error_msg,
+                    error_type=str(type(e)),
+                    retry_wait="exponential backoff (10s -> 120s)"
+                )
+                raise  # Trigger retry
+            else:
+                # For non-429 errors, log and re-raise without retry
+                log_message(
+                    message_type="duckdb_join_error",
+                    error=error_msg,
+                    error_type=str(type(e))
+                )
+                raise
+    
+    try:
+        execute_with_retry()
+        row_count = con.execute(f"SELECT count(*) FROM read_parquet('{output_sql}')").fetchone()[0]
+    finally:
+        con.close()
+    
     return int(row_count)
 
 
