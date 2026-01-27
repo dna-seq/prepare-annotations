@@ -85,7 +85,19 @@ Module conversion produces three standardized parquet files:
 - **State**: `protective`, `risk`, or `neutral`
 - **Genotype**: List of 2 alleles, alphabetically sorted
 
-Converted datasets are uploaded to the [`just-dna-seq`](https://huggingface.co/just-dna-seq) organization on HuggingFace Hub. See the [Hugging Face Module Consumption Guide](docs/HF_MODULES_CONSUMPTION.md) for details on how to use these modules in your own pipelines.
+Converted datasets are uploaded to the [`just-dna-seq`](https://huggingface.co/just-dna-seq) organization on HuggingFace Hub.
+
+## Documentation
+
+Detailed documentation is available in the [`docs/`](docs/) folder:
+
+| Document | Description |
+|----------|-------------|
+| [Modules Schema](docs/modules_schema.md) | Unified annotation schema specification (annotations, studies, weights) |
+| [Dagster Modules Pipeline](docs/DAGSTER_MODULES_PIPELINE.md) | Overview of all module conversion pipelines |
+| [Dagster LongevityMap Pipeline](docs/DAGSTER_LONGEVITYMAP_PIPELINE.md) | Detailed LongevityMap pipeline with genotype expansion |
+| [Dagster Ensembl Pipeline](docs/DAGSTER_ENSEMBL_PIPELINE.md) | Ensembl VCF download and conversion pipeline |
+| [HuggingFace Consumption Guide](docs/HF_MODULES_CONSUMPTION.md) | How to use converted modules from HuggingFace Hub |
 
 ## Package Structure
 
@@ -98,14 +110,18 @@ src/prepare_annotations/
 ├── cli.py                  # Typer CLI entrypoint
 │
 ├── core/                   # Core utilities
+│   ├── config.py           # Pydantic config classes
+│   ├── dagster_configs.py  # Dagster-specific configurations
+│   ├── dagster_io_managers.py  # Custom IO managers
 │   ├── io.py               # VCF/Parquet I/O
 │   ├── models.py           # Pydantic models
 │   ├── paths.py            # Path helpers
-│   └── runtime.py          # Profiling, environment
+│   └── runtime.py          # Resource tracking and profiling
 │
 ├── assets/                 # Dagster assets
 │   ├── ensembl.py          # Ensembl VCF pipeline
-│   └── modules.py          # OakVar module conversion
+│   ├── modules.py          # OakVar module conversion
+│   └── checks.py           # Asset validation checks
 │
 ├── downloaders/            # Download utilities
 │   ├── vcf.py              # VCF download
@@ -116,6 +132,12 @@ src/prepare_annotations/
 │   └── dataset_cards.py    # Dataset card templates
 │
 └── converters/             # OakVar module converters
+    ├── longevitymap.py     # LongevityMap converter
+    ├── lipidmetabolism.py  # Lipid metabolism converter
+    ├── vo2max.py           # VO2max converter
+    ├── superhuman.py       # Superhuman converter
+    ├── coronary.py         # Coronary disease converter
+    └── drugs.py            # Pharmacogenomics converter
 ```
 
 ## Testing
